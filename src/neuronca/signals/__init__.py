@@ -9,6 +9,13 @@ from neuronca.signals.base import (
     ScoreBundle,
 )
 from neuronca.signals.eligibility import ThreeFactorScalarEligibility
+from neuronca.signals.gevb_alignment import (
+    GEVB_ALIGNMENT_CSV_COLUMNS,
+    alignment_rows_for_csv,
+    compute_gevb_alignment,
+    find_gevb_signal,
+    subspace_principal_angle_deg,
+)
 from neuronca.signals.gevb_eligibility import (
     GEVBVectorEligibility,
     default_gevb_persist_path,
@@ -18,6 +25,7 @@ from neuronca.signals.hebbian_corr import HebbianResidualEnergyCorr
 
 __all__ = [
     "DEFAULT_DECAY",
+    "GEVB_ALIGNMENT_CSV_COLUMNS",
     "LAYER_ACT_KEYS",
     "ActivationMagnitude",
     "ConfigError",
@@ -26,9 +34,13 @@ __all__ = [
     "LocalSignal",
     "ScoreBundle",
     "ThreeFactorScalarEligibility",
+    "alignment_rows_for_csv",
     "build_signal",
+    "compute_gevb_alignment",
     "default_gevb_persist_path",
+    "find_gevb_signal",
     "gevb_rng_seed",
+    "subspace_principal_angle_deg",
 ]
 
 

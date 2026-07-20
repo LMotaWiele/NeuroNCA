@@ -10,6 +10,7 @@ Does **not** implement task-shift (see ``task_shift.py``).
 from __future__ import annotations
 
 import copy
+import csv
 import json
 import math
 from pathlib import Path
@@ -51,8 +52,15 @@ from neuronca.io.seed import set_seed
 from neuronca.models.mlp import MLPReasoningNet
 from neuronca.signals import build_signal
 from neuronca.signals.base import ScoreBundle
+from neuronca.signals.gevb_alignment import (
+    GEVB_ALIGNMENT_CSV_COLUMNS,
+    alignment_rows_for_csv,
+    compute_gevb_alignment,
+    find_gevb_signal,
+)
 from neuronca.signals.gevb_eligibility import default_gevb_persist_path
 from neuronca.training.callbacks import InstrumentedTrainer, SnapshotResult
+from neuronca.training.isolation import IsolationGuard, parse_isolation_mode
 from neuronca.training.loop import resolve_device
 from neuronca.training.optim import build_optimizer
 
@@ -357,6 +365,72 @@ def _finite_or_none(value: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
+def _eval_isolation_guard(config: Mapping[str, Any]) -> IsolationGuard:
+    """Build isolation guard from ``eval.check_isolation`` (default: always)."""
+    eval_cfg = dict(config.get("eval") or {})
+    mode = parse_isolation_mode(eval_cfg.get("check_isolation", "always"))
+    return IsolationGuard(mode=mode)
+
+
+def _gevb_alignment_enabled(config: Mapping[str, Any]) -> bool:
+    eval_cfg = dict(config.get("eval") or {})
+    return bool(eval_cfg.get("gevb_alignment", True))
+
+
+def _gevb_alignment_max_batches(config: Mapping[str, Any]) -> int:
+    eval_cfg = dict(config.get("eval") or {})
+    return int(eval_cfg.get("gevb_alignment_max_batches", 4))
+
+
+def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(columns), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({c: row.get(c) for c in columns})
+
+
+def _maybe_record_gevb_alignment(
+    *,
+    model: nn.Module,
+    signals: Sequence[Any],
+    probe_loader: Any,
+    config: Mapping[str, Any],
+    device: Any,
+    seed: int,
+    step: int,
+    snapshot_tag: str,
+    epoch: int | None,
+    rows_out: list[dict[str, Any]],
+) -> dict[str, dict[str, float]] | None:
+    """Append GEVB alignment rows if enabled and candidate 4 is present."""
+    if not _gevb_alignment_enabled(config):
+        return None
+    gevb = find_gevb_signal(signals)
+    if gevb is None:
+        return None
+    alignment = compute_gevb_alignment(
+        model,
+        gevb,
+        probe_loader,
+        criterion=nn.CrossEntropyLoss(),
+        encoder=BroadcastErrorEncoder(),
+        device=device,
+        max_batches=_gevb_alignment_max_batches(config),
+    )
+    rows_out.extend(
+        alignment_rows_for_csv(
+            alignment,
+            seed=int(seed),
+            step=int(step),
+            snapshot_tag=snapshot_tag,
+            epoch=epoch,
+        )
+    )
+    return alignment
+
+
 def _best_late_edge_rho(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Pick best local candidate by overall edge Spearman vs grad_abs at late."""
     best_name: str | None = None
@@ -518,6 +592,9 @@ def run_stationary(
     all_rows: list[dict[str, Any]] = []
     train_history: list[dict[str, Any]] = []
     snapshot_records: list[dict[str, Any]] = []
+    gevb_alignment_rows: list[dict[str, Any]] = []
+    isolation_guard = _eval_isolation_guard(cfg)
+    isolation_checks: list[dict[str, Any]] = []
 
     for epoch_idx in range(epochs):
         epoch_1based = epoch_idx + 1
@@ -538,15 +615,38 @@ def run_stationary(
         if epoch_1based not in by_epoch:
             continue
 
-        # One isolated snapshot (freeze → GT signals-off → resume); emit rows
-        # for every schedule tag that lands on this epoch (smoke: early=mid=late).
+        # Live isolation assert on the real run (default: every snapshot).
+        check_iso = isolation_guard.for_snapshot()
         snap = trainer.snapshot(
             gt_measures,
             probe_loader,
             edge_sample_mask=edge_mask,
-            check_isolation=False,
+            check_isolation=check_iso,
         )
         tags = [s.tag for s in by_epoch[epoch_1based]]
+        # One physical GT call may map to multiple schedule tags (smoke early=mid=late).
+        primary_tag = tags[0] if tags else f"epoch_{epoch_1based}"
+        if check_iso:
+            isolation_checks.append(
+                {
+                    "tag": primary_tag,
+                    "step": snap.step,
+                    "epoch": epoch_1based,
+                    "passed": True,
+                }
+            )
+        align = _maybe_record_gevb_alignment(
+            model=model,
+            signals=signals,
+            probe_loader=probe_loader,
+            config=cfg,
+            device=device,
+            seed=int(seed),
+            step=snap.step,
+            snapshot_tag=primary_tag,
+            epoch=epoch_1based,
+            rows_out=gevb_alignment_rows,
+        )
         for tag in tags:
             rows = _correlation_rows_for_snapshot(
                 snap,
@@ -565,14 +665,35 @@ def run_stationary(
                     "n_correlation_rows": len(rows),
                     "gt_measures": list(snap.gt_results.keys()),
                     "local_signals": list(snap.local_scores.keys()),
+                    "check_isolation": check_iso,
+                    "gevb_alignment": align,
                 }
             )
 
     corr_path = run_dir / "correlations.csv"
     write_correlations_csv(corr_path, all_rows)
 
+    align_path = run_dir / "gevb_alignment.csv"
+    if gevb_alignment_rows:
+        _write_csv(align_path, GEVB_ALIGNMENT_CSV_COLUMNS, gevb_alignment_rows)
+
     late_best = _best_late_edge_rho(all_rows)
     final_train = train_history[-1] if train_history else {}
+    late_align = None
+    if gevb_alignment_rows:
+        # Prefer the last recorded alignment block (usually late).
+        late_rows = [r for r in gevb_alignment_rows if r.get("snapshot_tag") in ("late", "early", "mid")]
+        # Group last step's layers
+        if late_rows:
+            last_step = max(int(r["step"]) for r in late_rows)
+            late_align = {
+                str(r["layer"]): {
+                    "fa_signal_angle_deg": r.get("fa_signal_angle_deg"),
+                    "subspace_principal_angle_deg": r.get("subspace_principal_angle_deg"),
+                }
+                for r in late_rows
+                if int(r["step"]) == last_step
+            }
 
     summary: dict[str, Any] = {
         "seed": int(seed),
@@ -594,8 +715,12 @@ def run_stationary(
         "final_train_loss": final_train.get("train_loss"),
         "final_train_acc": final_train.get("train_acc"),
         "late_edge_grad_abs": late_best,
+        "check_isolation_mode": isolation_guard.mode,
+        "isolation_checks": isolation_checks,
+        "gevb_alignment_late": late_align,
         "artifacts": {
             "correlations_csv": str(corr_path),
+            "gevb_alignment_csv": str(align_path) if gevb_alignment_rows else None,
             "run_dir": str(run_dir),
             "meta_dir": str(meta_dir),
         },

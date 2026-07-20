@@ -62,12 +62,16 @@ from neuronca.experiments.stationary import (
     _build_gt_measures,
     _build_signals,
     _config_for_ledger,
+    _eval_isolation_guard,
     _finite_or_none,
     _gt_measure_names,
     _mask_map_to_numpy,
+    _maybe_record_gevb_alignment,
     _prepare_edge_mask,
     _tensor_map_to_numpy,
+    _write_csv,
 )
+from neuronca.signals.gevb_alignment import GEVB_ALIGNMENT_CSV_COLUMNS
 
 
 CONDITION = "task_shift"
@@ -466,10 +470,55 @@ def run_task_shift(
     all_rows: list[dict[str, Any]] = []
     train_history: list[dict[str, Any]] = []
     snapshot_records: list[dict[str, Any]] = []
+    gevb_alignment_rows: list[dict[str, Any]] = []
+    isolation_guard = _eval_isolation_guard(cfg)
+    isolation_checks: list[dict[str, Any]] = []
 
     # lag collection: (local, gt) → list of (t, rho_edge_overall)
     lag_curves: dict[tuple[str, str], list[tuple[int, float]]] = {}
     rho_pre_by_local: dict[str, float | None] = {}
+
+    def _snap(
+        gt_measures: Sequence[Any],
+        *,
+        tag: str,
+        epoch: int | None = None,
+        steps_after_switch: int | None = None,
+    ) -> SnapshotResult:
+        """Snapshot with live isolation assert + GEVB alignment logging."""
+        check_iso = isolation_guard.for_snapshot()
+        snap = trainer.snapshot(
+            gt_measures,
+            probe_loader,
+            edge_sample_mask=edge_mask,
+            check_isolation=check_iso,
+        )
+        if check_iso:
+            isolation_checks.append(
+                {
+                    "tag": tag,
+                    "step": snap.step,
+                    "epoch": epoch,
+                    "steps_after_switch": steps_after_switch,
+                    "passed": True,
+                }
+            )
+        align = _maybe_record_gevb_alignment(
+            model=model,
+            signals=signals,
+            probe_loader=probe_loader,
+            config=cfg,
+            device=device,
+            seed=int(seed),
+            step=snap.step,
+            snapshot_tag=tag,
+            epoch=epoch,
+            rows_out=gevb_alignment_rows,
+        )
+        # Stash for record helper
+        snap._gevb_alignment = align  # type: ignore[attr-defined]
+        snap._check_isolation = check_iso  # type: ignore[attr-defined]
+        return snap
 
     def _record_snapshot(
         snap: SnapshotResult,
@@ -497,6 +546,8 @@ def run_task_shift(
                 "gt_measures": list(snap.gt_results.keys()),
                 "local_signals": list(snap.local_scores.keys()),
                 "task_version": task_ctx.version,
+                "check_isolation": getattr(snap, "_check_isolation", None),
+                "gevb_alignment": getattr(snap, "_gevb_alignment", None),
             }
         )
         return rows
@@ -526,12 +577,7 @@ def run_task_shift(
             # taken once after the A loop with full switch semantics.
             if tag in ("late_a", "switch_b0"):
                 continue
-            snap = trainer.snapshot(
-                gt_full,
-                probe_loader,
-                edge_sample_mask=edge_mask,
-                check_isolation=False,
-            )
+            snap = _snap(gt_full, tag=tag, epoch=epoch_1based)
             _record_snapshot(snap, tag, epoch=epoch_1based)
 
     # ------------------------------------------------------------------
@@ -541,12 +587,7 @@ def run_task_shift(
     weights_before = {
         name: p.detach().clone() for name, p in model.named_parameters()
     }
-    snap_late_a = trainer.snapshot(
-        gt_full,
-        probe_loader,
-        edge_sample_mask=edge_mask,
-        check_isolation=False,
-    )
+    snap_late_a = _snap(gt_full, tag="late_a", epoch=epochs_a)
     late_a_rows = _record_snapshot(
         snap_late_a, "late_a", epoch=epochs_a, steps_after_switch=None
     )
@@ -574,11 +615,8 @@ def run_task_shift(
             raise RuntimeError(
                 f"weights changed between late_a and switch_b0 at {name!r}"
             )
-    snap_b0 = trainer.snapshot(
-        gt_full,
-        probe_loader,
-        edge_sample_mask=edge_mask,
-        check_isolation=False,
+    snap_b0 = _snap(
+        gt_full, tag="switch_b0", epoch=epochs_a, steps_after_switch=0
     )
     _record_snapshot(snap_b0, "switch_b0", epoch=epochs_a, steps_after_switch=0)
 
@@ -629,12 +667,7 @@ def run_task_shift(
         for t in candidate_ts:
             if t in lag_done:
                 continue
-            snap = trainer.snapshot(
-                gt_lag,
-                probe_loader,
-                edge_sample_mask=edge_mask,
-                check_isolation=False,
-            )
+            snap = _snap(gt_lag, tag=f"lag_t{t}", steps_after_switch=t)
             rows = _record_snapshot(
                 snap,
                 f"lag_t{t}",
@@ -705,11 +738,12 @@ def run_task_shift(
         if coarse_tags:
             # One full-GT compute; emit a correlation row set per coarse tag
             # (mid_b == late_b when epochs_b == 1).
-            snap = trainer.snapshot(
+            primary = coarse_tags[0]
+            snap = _snap(
                 gt_full,
-                probe_loader,
-                edge_sample_mask=edge_mask,
-                check_isolation=False,
+                tag=primary,
+                epoch=epoch_1based,
+                steps_after_switch=b_steps,
             )
             seen_tag: set[str] = set()
             for tag in coarse_tags:
@@ -721,15 +755,16 @@ def run_task_shift(
                 )
         else:
             # Non-coarse B epoch end: GT-1 only
-            snap = trainer.snapshot(
+            tag = f"b_epoch_{epoch_1based}"
+            snap = _snap(
                 gt_lag,
-                probe_loader,
-                edge_sample_mask=edge_mask,
-                check_isolation=False,
+                tag=tag,
+                epoch=epoch_1based,
+                steps_after_switch=b_steps,
             )
             _record_snapshot(
                 snap,
-                f"b_epoch_{epoch_1based}",
+                tag,
                 epoch=epoch_1based,
                 steps_after_switch=b_steps,
             )
@@ -819,10 +854,31 @@ def run_task_shift(
     metrics_path = run_dir / "metrics_train.csv"
     _write_metrics_train_csv(metrics_path, train_history)
 
+    align_path = run_dir / "gevb_alignment.csv"
+    if gevb_alignment_rows:
+        _write_csv(align_path, GEVB_ALIGNMENT_CSV_COLUMNS, gevb_alignment_rows)
+
     final_train = next(
         (h for h in reversed(train_history) if h.get("phase") == "B"),
         train_history[-1] if train_history else {},
     )
+
+    # Late-A alignment snapshot (pre-switch) for summary inspection
+    late_a_align = None
+    if gevb_alignment_rows:
+        late_a_rows_align = [
+            r for r in gevb_alignment_rows if r.get("snapshot_tag") == "late_a"
+        ]
+        if late_a_rows_align:
+            late_a_align = {
+                str(r["layer"]): {
+                    "fa_signal_angle_deg": r.get("fa_signal_angle_deg"),
+                    "subspace_principal_angle_deg": r.get(
+                        "subspace_principal_angle_deg"
+                    ),
+                }
+                for r in late_a_rows_align
+            }
 
     summary: dict[str, Any] = {
         "seed": int(seed),
@@ -860,10 +916,14 @@ def run_task_shift(
             k: (v if v is not None else None) for k, v in rho_pre_by_local.items()
         },
         "lag_recovery": lag_recovery_summary,
+        "check_isolation_mode": isolation_guard.mode,
+        "isolation_checks": isolation_checks,
+        "gevb_alignment_late_a": late_a_align,
         "artifacts": {
             "correlations_csv": str(corr_path),
             "time_lag_csv": str(lag_path),
             "metrics_train_csv": str(metrics_path),
+            "gevb_alignment_csv": str(align_path) if gevb_alignment_rows else None,
             "run_dir": str(run_dir),
             "meta_dir": str(meta_dir),
         },

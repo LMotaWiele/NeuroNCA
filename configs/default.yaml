@@ -60,6 +60,13 @@ eval:
   layer_zscore_before_concat: true
   spearman_min_pairs: 16
   gt_shift_disagreement_ceiling: 0.90   # weak_shift if mean ρ_shift ≥ this
+  # Live bitwise isolation assert on real experiment snapshots (signals_disabled
+  # is always on during GT; this verifies EMA buffers did not move).
+  # always | first (canary) | off. Default always — measured cost ~1s/seed.
+  check_isolation: always
+  # GEVB FA alignment diagnostic (angles vs true ∂L/∂z and col(W)↔col(B)).
+  gevb_alignment: true
+  gevb_alignment_max_batches: 4
   thresholds:
     stationary_edge_spearman: 0.60      # stationary_pass mean ρ for best_local
     stationary_seed_floor: 0.50         # per-seed floor
@@ -101,5 +108,9 @@ smoke:
     lag_stride: 25
     lag_gt_measures: [grad_abs]
     coarse_gt_measures: [grad_abs]
+    # Still assert isolation on every smoke snapshot (cheap canary for CI/smoke).
+    check_isolation: always
+    gevb_alignment: true
+    gevb_alignment_max_batches: 2
   experiment:
     seeds: [0]
