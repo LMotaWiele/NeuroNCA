@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, TypedDict
 
 import torch
 from torch import Tensor
@@ -19,6 +19,32 @@ DEFAULT_PROBE_SIZE = 1024
 DEFAULT_IMAGE_SIZE = 28 * 28
 
 
+class MNISTDatasetBundle(TypedDict):
+    """Return type of :func:`build_mnist_datasets`."""
+
+    train: TaskAwareDataset
+    probe: TaskAwareDataset
+    test: TaskAwareDataset
+    train_indices: Tensor
+    probe_indices: Tensor
+    train_full: datasets.MNIST
+
+
+class MNISTLoaderBundle(TypedDict):
+    """Return type of :func:`build_mnist_loaders`."""
+
+    train_loader: DataLoader
+    probe_loader: DataLoader
+    test_loader: DataLoader
+    train_dataset: TaskAwareDataset
+    probe_dataset: TaskAwareDataset
+    test_dataset: TaskAwareDataset
+    train_indices: Tensor
+    probe_indices: Tensor
+    train_full: datasets.MNIST
+    task_context: TaskContext
+
+
 def default_image_transform() -> transforms.Compose:
     """Normalize MNIST with the standard mean/std."""
     return transforms.Compose(
@@ -29,11 +55,22 @@ def default_image_transform() -> transforms.Compose:
     )
 
 
+def _base_dataset_index(base: Dataset, index: int) -> int:
+    """Map a wrapper-local index through nested Subsets to the MNIST base index."""
+    ds: Any = base
+    idx = int(index)
+    while isinstance(ds, Subset):
+        idx = int(ds.indices[idx])
+        ds = ds.dataset
+    return idx
+
+
 class TaskAwareDataset(Dataset):
     """Wrap a base dataset and apply TaskContext transforms on the fly.
 
     Both train and probe subsets share the same ``TaskContext`` instance so an
-    atomic ``set_transform`` updates labels/inputs for all consumers.
+    atomic ``set_transform`` updates labels/inputs for all in-process consumers
+    (see :class:`~neuronca.data.tasks.TaskContext` multi-worker caveats).
     """
 
     def __init__(
@@ -51,14 +88,7 @@ class TaskAwareDataset(Dataset):
         return len(self.base)
 
     def __getitem__(self, index: int):
-        item = self.base[index]
-        if len(item) == 2:
-            x, y = item
-            raw_index = index
-        else:
-            # Subset of a dataset that already returns (x, y) only.
-            x, y = item[0], item[1]
-            raw_index = index
+        x, y = self.base[index]
 
         if not torch.is_tensor(y):
             y = torch.tensor(y)
@@ -71,7 +101,9 @@ class TaskAwareDataset(Dataset):
         y_t = y_t.long()
 
         if self.return_index:
-            return x_t, y_t, raw_index
+            # MNIST base index (maps through Subset.indices when applicable).
+            base_index = _base_dataset_index(self.base, index)
+            return x_t, y_t, base_index
         return x_t, y_t
 
 
@@ -167,7 +199,7 @@ def build_mnist_datasets(
     seed: int = 0,
     download: bool = True,
     return_index: bool = False,
-) -> dict[str, Dataset]:
+) -> MNISTDatasetBundle:
     """Build train / probe / test datasets sharing ``task_context``.
 
     Probe indices are carved from the official MNIST training split (seeded,
@@ -212,11 +244,23 @@ def build_mnist_loaders(
     num_workers: int = 0,
     download: bool = True,
     pin_memory: bool | None = None,
-) -> dict:
+) -> MNISTLoaderBundle:
     """Build DataLoaders for train / probe / test sharing ``task_context``.
 
     Returns a dict with loaders plus the index tensors used for the split so
     tests can verify label transforms against raw labels.
+
+    Task-switch contract (multi-worker)
+    -----------------------------------
+    Default ``num_workers=0`` is safe for mid-process ``TaskContext.set_transform``.
+    If ``num_workers > 0`` (as in ``configs/default.yaml`` for training throughput):
+
+    - Drain all loader iterators **before** ``set_transform`` (do not flip mid-epoch).
+    - Do not use ``persistent_workers=True`` across the A→B boundary; rebuild
+      loaders after the flip so workers respawn with the new transform.
+    - Prefer ``num_workers=0`` for probe/GT loaders at the switch snapshot.
+
+    See :class:`~neuronca.data.tasks.TaskContext` for details.
     """
     bundles = build_mnist_datasets(
         task_context,

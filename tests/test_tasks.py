@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from neuronca.data.mnist import (
@@ -12,6 +13,8 @@ from neuronca.data.mnist import (
 from neuronca.data.tasks import (
     IdentityTransform,
     TaskContext,
+    indices_in_digit_range,
+    make_digit_split_transform,
     make_identity_transform,
     make_label_permutation_transform,
     make_pixel_permutation_transform,
@@ -73,6 +76,7 @@ def test_probe_labels_under_b1_equal_pi_raw():
 def test_task_context_atomic_flip_affects_train_and_probe():
     """TaskContext atomic flip affects both train and probe views."""
     ctx = TaskContext(make_identity_transform())
+    assert ctx.version == 0
     bundles = build_mnist_datasets(
         ctx,
         root="data/mnist",
@@ -100,6 +104,7 @@ def test_task_context_atomic_flip_affects_train_and_probe():
     pi = b1.permutation
     # Atomic flip — single call
     ctx.set_transform(b1)
+    assert ctx.version == 1
 
     _, y_train_b = train_ds[0]
     _, y_probe_b = probe_ds[0]
@@ -174,3 +179,62 @@ def test_build_mnist_loaders_smoke():
     assert x.shape[1] == 1  # MNIST channel
     assert y.shape[0] == 16
     assert out["task_context"] is ctx
+
+
+def test_digit_split_in_range_remap():
+    """B2 remaps in-range labels: 5→0, 9→4."""
+    t = make_digit_split_transform(low=5, high=9)
+    assert t.num_classes == 5
+    assert int(t.map_label(torch.tensor(5))) == 0
+    assert int(t.map_label(torch.tensor(9))) == 4
+    assert int(t.map_label(torch.tensor(7))) == 2
+    # Batched
+    mapped = t.map_label(torch.tensor([5, 6, 9]))
+    assert torch.equal(mapped, torch.tensor([0, 1, 4]))
+
+
+def test_digit_split_out_of_range_raises():
+    """B2 must not silently produce negative CE targets."""
+    t = make_digit_split_transform(low=5, high=9)
+    with pytest.raises(ValueError, match="out-of-range"):
+        t.map_label(torch.tensor(3))
+    with pytest.raises(ValueError, match="out-of-range"):
+        t.map_label(torch.tensor([5, 2, 9]))
+
+
+def test_indices_in_digit_range_filter():
+    """Filter helper keeps only labels in [low, high]."""
+    targets = torch.tensor([0, 1, 5, 6, 9, 4, 8, 3])
+    idx = indices_in_digit_range(targets, low=5, high=9)
+    assert set(idx.tolist()) == {2, 3, 4, 6}
+    assert torch.equal(targets[idx], torch.tensor([5, 6, 9, 8]))
+    # After filter, remap is CE-safe
+    t = make_digit_split_transform(low=5, high=9)
+    mapped = t.map_label(targets[idx])
+    assert torch.equal(mapped, torch.tensor([0, 1, 4, 3]))
+    assert (mapped >= 0).all() and (mapped < 5).all()
+
+
+def test_return_index_is_mnist_base_index():
+    """return_index maps through Subset to the original MNIST index."""
+    ctx = TaskContext(make_identity_transform())
+    bundles = build_mnist_datasets(
+        ctx,
+        root="data/mnist",
+        probe_size=32,
+        seed=0,
+        download=True,
+        return_index=True,
+    )
+    probe_indices = bundles["probe_indices"]
+    train_full = bundles["train_full"]
+    raw_targets = train_full.targets
+    if not torch.is_tensor(raw_targets):
+        raw_targets = torch.tensor(raw_targets)
+    raw_targets = raw_targets.long()
+
+    probe_ds = bundles["probe"]
+    for i in range(min(8, len(probe_ds))):
+        _x, y, base_idx = probe_ds[i]
+        assert int(base_idx) == int(probe_indices[i])
+        assert int(y) == int(raw_targets[base_idx])

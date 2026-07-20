@@ -40,7 +40,14 @@ class LabelPermutationTransform:
 
 
 class DigitSplitTransform:
-    """Task B2: remap labels in [low, high] to 0..K-1 (digit-range split)."""
+    """Task B2: remap labels in [low, high] to 0..K-1 (digit-range split).
+
+    This transform only remaps labels. Callers **must** restrict the dataset to
+    indices whose raw labels lie in ``[low, high]`` (see
+    :func:`indices_in_digit_range`). Applying this transform to unfiltered MNIST
+    raises ``ValueError`` for out-of-range labels so misuse fails loudly rather
+    than producing negative CE targets.
+    """
 
     def __init__(self, low: int = 5, high: int = 9) -> None:
         if low > high:
@@ -48,12 +55,24 @@ class DigitSplitTransform:
         self.low = int(low)
         self.high = int(high)
 
+    @property
+    def num_classes(self) -> int:
+        return self.high - self.low + 1
+
     def map_input(self, x: Tensor) -> Tensor:
         return x
 
     def map_label(self, y: Tensor) -> Tensor:
-        # Filtering of out-of-range digits is a dataset concern; remap only.
-        return y.long() - self.low
+        y = y.long()
+        # Accept 0-d or 1-d; validate all elements are in range.
+        if ((y < self.low) | (y > self.high)).any().item():
+            bad = y[((y < self.low) | (y > self.high))]
+            raise ValueError(
+                f"DigitSplitTransform expects labels in [{self.low}, {self.high}]; "
+                f"got out-of-range value(s) e.g. {int(bad.reshape(-1)[0])}. "
+                "Filter the dataset with indices_in_digit_range before applying B2."
+            )
+        return y - self.low
 
 
 class PixelPermutationTransform:
@@ -75,28 +94,12 @@ class PixelPermutationTransform:
             # Already flat on last dim: (..., N)
             return x[..., perm]
 
-        if x.numel() >= self.num_pixels and x.shape[-1] * (x.shape[-2] if x.ndim >= 2 else 1) == self.num_pixels:
+        if x.ndim >= 2 and x.shape[-1] * x.shape[-2] == self.num_pixels:
             # Spatial (..., H, W) with H*W == num_pixels
             leading = x.shape[:-2]
             h, w = x.shape[-2], x.shape[-1]
             flat = x.reshape(*leading, h * w)
             return flat[..., perm].reshape(*leading, h, w)
-
-        if x.ndim >= 3 and x.shape[-2] * x.shape[-1] == self.num_pixels:
-            leading = x.shape[:-2]
-            h, w = x.shape[-2], x.shape[-1]
-            flat = x.reshape(*leading, h * w)
-            return flat[..., perm].reshape(*leading, h, w)
-
-        # (C, H, W) single sample without batch
-        if x.ndim == 3:
-            c, h, w = x.shape
-            if c * h * w == self.num_pixels:
-                flat = x.reshape(self.num_pixels)
-                return flat[perm].reshape(c, h, w)
-            if h * w == self.num_pixels:
-                flat = x.reshape(c, h * w)
-                return flat[:, perm].reshape(c, h, w)
 
         if x.ndim == 1 and x.numel() == self.num_pixels:
             return x[perm]
@@ -111,24 +114,77 @@ class PixelPermutationTransform:
 
 
 class TaskContext:
-    """Single active transform; train_loader and probe_loader both read this."""
+    """Single active transform; train_loader and probe_loader both read this.
+
+    Atomicity contract
+    ------------------
+    ``set_transform`` is a single in-process attribute assignment. Train and
+    probe ``TaskAwareDataset`` instances share this object and re-read
+    ``transform`` on every ``__getitem__``, so with ``num_workers=0`` a flip is
+    immediately visible to both views.
+
+    With ``DataLoader(num_workers > 0)``, worker processes hold a forked copy of
+    the context and **do not** see a mid-lifetime assignment. Required protocol
+    at an A→B switch (matches design switch-boundary sequencing):
+
+    1. Drain / finish all active loader iterators (do not flip mid-epoch while
+       workers are serving batches).
+    2. Do not use ``persistent_workers=True`` across the A→B boundary (or
+       rebuild loaders after the flip so workers respawn).
+    3. Prefer ``num_workers=0`` for probe/GT loaders at the switch, or recreate
+       workers after ``set_transform``.
+
+    A fresh full iteration after the flip with non-persistent workers does pick
+    up the new transform. Optional ``version`` counter increments on each flip
+    for debugging train/probe mismatches.
+    """
 
     def __init__(self, transform: TaskTransform | None = None) -> None:
-        self._transform: TaskTransform = transform if transform is not None else IdentityTransform()
+        self._transform: TaskTransform = (
+            transform if transform is not None else IdentityTransform()
+        )
+        self._version: int = 0
 
     @property
     def transform(self) -> TaskTransform:
         return self._transform
 
+    @property
+    def version(self) -> int:
+        """Monotonic counter; increments on each ``set_transform`` call."""
+        return self._version
+
     def set_transform(self, t: TaskTransform) -> None:
-        """Atomically replace the active transform for all consumers."""
+        """Atomically replace the active transform for all in-process consumers.
+
+        See class docstring for multi-worker DataLoader caveats.
+        """
         self._transform = t
+        self._version += 1
 
     def map_input(self, x: Tensor) -> Tensor:
         return self._transform.map_input(x)
 
     def map_label(self, y: Tensor) -> Tensor:
         return self._transform.map_label(y)
+
+
+def indices_in_digit_range(
+    targets: Tensor,
+    low: int = 5,
+    high: int = 9,
+) -> Tensor:
+    """Return indices whose labels lie in ``[low, high]`` (for Task B2).
+
+    Use this to subset train/probe/test before applying
+    :class:`DigitSplitTransform`. Design B2 is a restricted 5-way digit split
+    (e.g. A: 0–4, B: 5–9), not a full-MNIST label shift.
+    """
+    if low > high:
+        raise ValueError("low must be <= high")
+    targets = targets.long()
+    mask = (targets >= low) & (targets <= high)
+    return torch.nonzero(mask, as_tuple=False).view(-1).long()
 
 
 def make_identity_transform() -> IdentityTransform:
@@ -147,7 +203,12 @@ def make_label_permutation_transform(
 
 
 def make_digit_split_transform(low: int = 5, high: int = 9) -> DigitSplitTransform:
-    """Factory for B2: digit-range split (default 5–9)."""
+    """Factory for B2: digit-range split (default 5–9).
+
+    Does **not** filter the dataset. Pair with :func:`indices_in_digit_range`
+    (and a 5-way head) before training; out-of-range labels raise in
+    ``map_label``.
+    """
     return DigitSplitTransform(low=low, high=high)
 
 
