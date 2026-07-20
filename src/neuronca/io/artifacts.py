@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
 
 from neuronca.eval.verdict import VerdictResult
 
@@ -62,6 +65,9 @@ VERDICT_JSON_REQUIRED_FIELDS: tuple[str, ...] = (
     "catastrophic_fail",
     "thresholds",
 )
+
+# recovery_rho_definition: window-end wording (config-driven max steps, not hard-coded 500).
+RECOVERY_RHO_DEFINITION = "first_crossing_or_rho_at_window_end"
 
 
 def ensure_results_tree(root: str | Path = DEFAULT_RESULTS_ROOT) -> Path:
@@ -204,6 +210,43 @@ def correlation_rows_from_result(
     return rows
 
 
+def _is_nonfinite_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float, np.floating, np.integer)):
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return False
+        return not math.isfinite(f)
+    return False
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert non-finite floats to None for portable JSON."""
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if _is_nonfinite_number(value):
+        return None
+    if isinstance(value, (np.floating, np.integer)):
+        return float(value) if isinstance(value, np.floating) else int(value)
+    return value
+
+
+def _finite_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def verdict_payload(
     result: VerdictResult | Mapping[str, Any],
     *,
@@ -215,6 +258,10 @@ def verdict_payload(
     Flattens :class:`~neuronca.eval.verdict.VerdictResult` and always includes
     ``experiment_id``. Nested ``stationary`` / ``task_shift`` blocks are added
     when recoverable from the result for design-doc compatibility.
+
+    Non-finite floats become ``null``. Reserved schema keys cannot be clobbered
+    via ``extra`` (those keys are applied under ``extra`` only if reserved, else
+    rejected — see below).
     """
     if isinstance(result, VerdictResult):
         data = result.to_dict()
@@ -246,16 +293,31 @@ def verdict_payload(
     best = payload["best_local"]
     mean_rho = payload["mean_rho_by_candidate"]
     seed_rho = payload["seed_rho_by_candidate"]
-    best_seed = {}
+    best_seed: dict[str, float] = {}
     if best and best in seed_rho:
-        best_seed = {str(k): float(v) for k, v in seed_rho[best].items()}
+        for k, v in seed_rho[best].items():
+            fv = _finite_or_none(v)
+            if fv is not None:
+                best_seed[str(k)] = fv
     floor = float(payload["thresholds"].get("stationary_seed_floor", 0.50))
     seeds_above = sum(1 for v in best_seed.values() if v >= floor)
     best_vals = list(best_seed.values())
-    best_mean = float(sum(best_vals) / len(best_vals)) if best_vals else float("nan")
+    if best_vals:
+        best_rho_mean: float | None = float(sum(best_vals) / len(best_vals))
+        if len(best_vals) > 1:
+            best_rho_std: float | None = float(np.std(best_vals, ddof=0))
+        else:
+            best_rho_std = 0.0
+    else:
+        # Fall back to candidate mean map when per-seed map is empty.
+        fallback = mean_rho.get(best) if best else None
+        best_rho_mean = _finite_or_none(fallback)
+        best_rho_std = None
+
     payload["stationary"] = {
         "best_local": best,
-        "best_rho_mean": best_mean if best else mean_rho.get(best) if best else None,
+        "best_rho_mean": best_rho_mean,
+        "best_rho_std": best_rho_std,
         "per_seed_rho": best_seed,
         "seeds_above_floor": seeds_above,
     }
@@ -265,10 +327,20 @@ def verdict_payload(
         for rec in rec_by_seed.values()
         if isinstance(rec, Mapping) and rec.get("recovered_abs")
     )
+    # recovery_steps_mean: mean finite t_star_abs across seeds (optional design field)
+    t_stars = []
+    for rec in rec_by_seed.values():
+        if isinstance(rec, Mapping):
+            t = _finite_or_none(rec.get("t_star_abs"))
+            if t is not None:
+                t_stars.append(t)
+    recovery_steps_mean = float(sum(t_stars) / len(t_stars)) if t_stars else None
+
     payload["task_shift"] = {
         "best_local": best,
         "recovery_rho_mean": payload["recovery_rho_mean"],
-        "recovery_rho_definition": "first_crossing_or_rho_at_window_end",
+        "recovery_rho_definition": RECOVERY_RHO_DEFINITION,
+        "recovery_steps_mean": recovery_steps_mean,
         "seeds_recovered": seeds_recovered,
         "recovered": payload["recovered"],
         "gt_shift_disagreement_mean": payload["rho_shift_mean"],
@@ -276,8 +348,27 @@ def verdict_payload(
     payload["interpretation_notes"] = payload["notes"]
 
     if extra:
+        reserved = set(VERDICT_JSON_REQUIRED_FIELDS) | {
+            "stationary",
+            "task_shift",
+            "interpretation_notes",
+            "notes",
+            "mean_rho_by_candidate",
+            "seed_rho_by_candidate",
+            "recovery_by_seed",
+            "recovery_rho_mean",
+            "rho_shift_mean",
+            "rho_shift_by_seed",
+        }
+        clobber = sorted(k for k in extra if k in reserved)
+        if clobber:
+            raise ValueError(
+                f"extra= cannot clobber reserved verdict fields: {clobber}. "
+                "Put non-schema annotations under a non-reserved key."
+            )
         payload.update(dict(extra))
-    return payload
+
+    return _json_safe(payload)
 
 
 def _stringify_seed_keys(obj: Any) -> Any:
@@ -304,15 +395,32 @@ def write_verdict_json(
     *,
     experiment_id: str,
     extra: Mapping[str, Any] | None = None,
+    overwrite: bool = True,
 ) -> Path:
-    """Write ``verdict.json`` with required schema fields."""
+    """Write portable ``verdict.json`` with required schema fields.
+
+    Non-finite floats are written as JSON ``null`` (``allow_nan=False``).
+
+    Parameters
+    ----------
+    overwrite
+        If False and ``path`` already exists, raise :class:`FileExistsError`.
+        Use ``overwrite=False`` for primary aggregate paths when sensitivity
+        runs must not clobber ``aggregate/verdict.json``.
+    """
     path = Path(path)
+    if path.is_file() and not overwrite:
+        raise FileExistsError(
+            f"refusing to overwrite existing verdict at {path}; "
+            "pass overwrite=True only for deliberate primary rewrites"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = verdict_payload(result, experiment_id=experiment_id, extra=extra)
     missing = [f for f in VERDICT_JSON_REQUIRED_FIELDS if f not in payload]
     if missing:
         raise ValueError(f"verdict payload missing required fields: {missing}")
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    text = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    path.write_text(text, encoding="utf-8")
     return path
 
 

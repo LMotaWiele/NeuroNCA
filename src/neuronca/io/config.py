@@ -7,6 +7,11 @@ Resolved config is the effective runtime dict after merging:
 The top-level ``smoke:`` block is an override source only and is stripped from
 the returned resolved config so content hashes reflect runtime values only.
 
+When ``smoke=True``, the smoke block is taken from the **base** defaults file
+(before override nullification). Overrides may not wipe CI smoke by setting
+``smoke: null``. If no usable smoke mapping is found, :class:`SmokeConfigError`
+is raised rather than silently running a full-budget config.
+
 Device resolution: ``device: auto`` becomes ``cuda`` if available else ``cpu``.
 """
 
@@ -23,6 +28,10 @@ import yaml
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # .../src/neuronca/io -> repo
 DEFAULT_CONFIG_PATH = _PACKAGE_ROOT / "configs" / "default.yaml"
 CONFIGS_DIR = _PACKAGE_ROOT / "configs"
+
+
+class SmokeConfigError(ValueError):
+    """Raised when ``smoke=True`` but no usable smoke override block is available."""
 
 
 def deep_merge(
@@ -76,6 +85,13 @@ def _apply_device(cfg: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def _usable_smoke_block(block: Any) -> dict[str, Any] | None:
+    """Return a non-empty smoke mapping, or None if missing / null / empty."""
+    if not isinstance(block, Mapping) or not block:
+        return None
+    return dict(block)
+
+
 def load_config(
     *override_paths: str | Path,
     defaults_path: str | Path | None = None,
@@ -93,10 +109,15 @@ def load_config(
     defaults_path
         Base YAML (default: ``configs/default.yaml`` relative to repo root).
     smoke
-        If True, deep-merge the top-level ``smoke:`` block from the base config
-        (after file overrides) so CI can shrink epochs / probe size / seeds.
+        If True, deep-merge the base file's top-level ``smoke:`` block so CI can
+        shrink epochs / probe size / seeds. The block is read from the base
+        defaults **before** override files run, so ``smoke: null`` in an override
+        cannot disable smoke. Raises :class:`SmokeConfigError` if no usable
+        smoke mapping exists on the base file.
     overrides
-        Optional in-memory mapping merged last (CLI flags, etc.).
+        Optional in-memory mapping merged last (CLI flags, etc.). The top-level
+        ``smoke`` key in overrides is ignored (stripped); use ``smoke=True`` to
+        apply smoke, not an in-memory smoke dict via overrides.
     resolve_dev
         If True (default), replace ``device: auto`` with a concrete device.
 
@@ -107,22 +128,31 @@ def load_config(
         content hashes reflect applied values only.
     """
     base_path = Path(defaults_path) if defaults_path is not None else DEFAULT_CONFIG_PATH
-    cfg = load_yaml(base_path)
+    base_raw = load_yaml(base_path)
+    # Capture smoke from the base file only (before overrides can nullify it).
+    base_smoke = _usable_smoke_block(base_raw.get("smoke"))
 
+    cfg = copy.deepcopy(base_raw)
     for path in override_paths:
         cfg = deep_merge(cfg, load_yaml(path))
 
-    smoke_block = cfg.pop("smoke", None)
+    # Always strip smoke from the merged tree (override nulls / partial maps).
+    cfg.pop("smoke", None)
+
     if smoke:
-        if smoke_block is None:
-            # Re-load smoke from pure defaults if overrides stripped it
-            if base_path != DEFAULT_CONFIG_PATH and DEFAULT_CONFIG_PATH.is_file():
-                smoke_block = load_yaml(DEFAULT_CONFIG_PATH).get("smoke")
-        if smoke_block:
-            cfg = deep_merge(cfg, smoke_block)
+        if base_smoke is None:
+            raise SmokeConfigError(
+                f"smoke=True but no usable smoke: block found in base config "
+                f"{base_path}. Define a non-empty top-level smoke: mapping on "
+                f"the defaults file; overrides must not be relied on to supply it."
+            )
+        cfg = deep_merge(cfg, base_smoke)
 
     if overrides:
-        cfg = deep_merge(cfg, dict(overrides))
+        # Do not allow overrides to re-introduce a smoke block into the hash.
+        ov = dict(overrides)
+        ov.pop("smoke", None)
+        cfg = deep_merge(cfg, ov)
         cfg.pop("smoke", None)
 
     if resolve_dev:

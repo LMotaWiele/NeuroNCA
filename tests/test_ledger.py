@@ -135,3 +135,57 @@ def test_signals_broadcast_code_hash_stable():
     h2 = signals_broadcast_code_sha256(PACKAGE)
     assert h1 == h2
     assert len(h1) == 64
+
+
+def test_freeze_refuses_missing_code_hash_file(tmp_path: Path, resolved_cfg):
+    """Wiped code-hash file + signals change must conflict (Issue 1)."""
+    out = tmp_path / "phase0"
+    pkg = tmp_path / "neuronca_pkg"
+    (pkg / "signals").mkdir(parents=True)
+    (pkg / "broadcast").mkdir(parents=True)
+    (pkg / "signals" / "__init__.py").write_text("# v1\n", encoding="utf-8")
+    (pkg / "broadcast" / "__init__.py").write_text("# v1\n", encoding="utf-8")
+
+    freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=pkg)
+    code_path = out / "meta" / CODE_HASH_FILE
+    code_path.write_text("", encoding="utf-8")  # wipe
+    (pkg / "signals" / "__init__.py").write_text("# v2\n", encoding="utf-8")
+    with pytest.raises(LedgerConflictError, match="code hash missing"):
+        freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=pkg)
+
+
+def test_freeze_refuses_tampered_experiment_id(tmp_path: Path, resolved_cfg):
+    """Tampered experiment_id with matching content hash must conflict (Issue 2)."""
+    out = tmp_path / "phase0"
+    m = freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE)
+    id_path = out / "meta" / EXPERIMENT_ID_FILE
+    id_path.write_text("tampered_id\n", encoding="utf-8")
+    with pytest.raises(LedgerConflictError, match="experiment_id suffix"):
+        freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE)
+    # force can rewrite
+    m2 = freeze_ledger(
+        out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE, force=True
+    )
+    assert m2.experiment_id == m.experiment_id or m2.content_sha256 == m.content_sha256
+
+
+def test_freeze_heals_tampered_thresholds(tmp_path: Path, resolved_cfg):
+    """Idempotent freeze re-derives thresholds from config (Issue 2)."""
+    out = tmp_path / "phase0"
+    freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE)
+    thr_path = out / "meta" / THRESHOLDS_FILE
+    thr_path.write_text('{"tampered": true}\n', encoding="utf-8")
+    m = freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE)
+    assert m.thresholds.get("stationary_edge_spearman") == 0.60
+    healed = json.loads(thr_path.read_text(encoding="utf-8"))
+    assert healed.get("stationary_edge_spearman") == 0.60
+    assert "tampered" not in healed
+
+
+def test_resolved_yaml_documents_pre_stamp_hash(tmp_path: Path, resolved_cfg):
+    """Header notes that content hash is pre-stamp (Issue 4)."""
+    out = tmp_path / "phase0"
+    freeze_ledger(out, resolved_cfg, when=date(2026, 7, 20), package_dir=PACKAGE)
+    text = (out / "meta" / CONFIG_RESOLVED_FILE).read_text(encoding="utf-8")
+    assert "pre-stamp" in text
+    assert "experiment.id" in text

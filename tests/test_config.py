@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from neuronca.io.config import (
+    SmokeConfigError,
     canonical_yaml,
     deep_merge,
     extract_thresholds,
@@ -122,3 +123,34 @@ def test_load_yaml_non_mapping_raises(tmp_path: Path):
     p.write_text("- 1\n- 2\n", encoding="utf-8")
     with pytest.raises(TypeError):
         load_yaml(p)
+
+
+def test_smoke_null_override_still_applies_base_smoke(tmp_path: Path):
+    """Overrides that set smoke: null must not disable CI smoke."""
+    defaults = tmp_path / "default.yaml"
+    defaults.write_text(
+        "train:\n  epochs: 20\n"
+        "experiment:\n  seeds: [0, 1, 2]\n"
+        "smoke:\n  train:\n    epochs: 1\n  experiment:\n    seeds: [0]\n",
+        encoding="utf-8",
+    )
+    override = tmp_path / "null_smoke.yaml"
+    override.write_text("smoke: null\n", encoding="utf-8")
+    cfg = load_config(override, defaults_path=defaults, smoke=True)
+    assert cfg["train"]["epochs"] == 1
+    assert cfg["experiment"]["seeds"] == [0]
+    assert "smoke" not in cfg
+
+
+def test_smoke_true_without_base_smoke_raises(tmp_path: Path):
+    """Custom base without smoke: + smoke=True must error, not pull project defaults."""
+    defaults = tmp_path / "bare.yaml"
+    defaults.write_text("train:\n  epochs: 20\n", encoding="utf-8")
+    with pytest.raises(SmokeConfigError, match="no usable smoke"):
+        load_config(defaults_path=defaults, smoke=True)
+
+
+def test_smoke_false_leaves_full_budget():
+    cfg = load_config(defaults_path=CONFIGS / "default.yaml", smoke=False)
+    assert cfg["train"]["epochs"] == 20
+    assert cfg["experiment"]["seeds"] == [0, 1, 2]

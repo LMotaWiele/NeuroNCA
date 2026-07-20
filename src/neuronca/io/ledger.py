@@ -5,26 +5,33 @@ Scientific integrity rules (Phase 0 design):
 1. At primary launch, write under ``{output_dir}/meta/``:
    - ``experiment_id.txt`` = ``UTC_date + "_" + first8(sha256(canonical_yaml(config)))``
    - ``config.resolved.yaml``
-   - ``config.content_sha256.txt``  (full SHA-256 of canonical resolved YAML)
+   - ``config.content_sha256.txt``  (full SHA-256 of **pre-stamp** resolved config)
    - ``thresholds.json``
    - ``signals_broadcast_code_sha256.txt`` (hash of ``signals/*`` + ``broadcast/*``)
 
 2. **Content hash** of the resolved config is the simple identity key: same config
-   bytes ⇒ same ``experiment_id`` suffix. Documented here so runners do not invent
-   alternate hashing schemes.
+   bytes ⇒ same ``experiment_id`` suffix. Hash is of the **runtime** config with
+   ``experiment.id`` forced to ``null`` (ledger-owned stamp is applied only when
+   writing ``config.resolved.yaml``). Re-hashing the stamped YAML file will
+   **not** match ``config.content_sha256.txt``; verify with the pre-stamp form
+   (see header comment written into ``config.resolved.yaml``).
 
-3. Freeze is **idempotent** when meta already matches (same config hash and same
-   signals/broadcast code hash).
+3. Freeze is **idempotent** when meta already matches (same config hash, same
+   signals/broadcast code hash, and on-disk ``experiment_id`` suffix matches
+   ``content_sha256[:8]``). Thresholds are always re-derived from the passed
+   config (disk thresholds are not trusted).
 
 4. Freeze **refuses to overwrite** a primary ledger when:
-   - the signals/broadcast source hash differs (code change mid-run / after primary), or
-   - the resolved-config content hash differs (would change experiment_id).
+   - the signals/broadcast source hash differs **or is missing on disk**, or
+   - the resolved-config content hash differs, or
+   - the on-disk experiment_id suffix disagrees with the content hash.
 
    Callers should archive under ``results/phase0_runs/<experiment_id>/`` instead.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -48,6 +55,13 @@ CODE_HASH_FILE = "signals_broadcast_code_sha256.txt"
 # Modules whose source changes invalidate a frozen primary run.
 _CODE_HASH_SUBPACKAGES = ("signals", "broadcast")
 
+_RESOLVED_HEADER = (
+    "# NeuroNCA resolved config (ledger archive).\n"
+    "# content_sha256 in config.content_sha256.txt is sha256 of the *pre-stamp*\n"
+    "# canonical YAML (experiment.id forced to null). The experiment.id below is\n"
+    "# ledger-owned and intentionally excluded from that hash.\n"
+)
+
 
 class LedgerConflictError(RuntimeError):
     """Raised when freeze would overwrite a primary ledger with different identity."""
@@ -64,13 +78,23 @@ class LedgerMeta:
     thresholds: dict[str, Any]
 
 
-def content_sha256(config: Mapping[str, Any]) -> str:
-    """SHA-256 hex digest of the canonical YAML of ``config``.
+def _config_for_hash(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy config with experiment.id forced to null for stable content hashing."""
+    cfg = copy.deepcopy(dict(config))
+    exp = dict(cfg.get("experiment") or {})
+    exp["id"] = None
+    cfg["experiment"] = exp
+    return cfg
 
-    This is the documented content hash for resolved configs: serialize with
-    :func:`neuronca.io.config.canonical_yaml` (sorted keys), then SHA-256.
+
+def content_sha256(config: Mapping[str, Any]) -> str:
+    """SHA-256 hex digest of the canonical pre-stamp resolved config.
+
+    Serializes with :func:`neuronca.io.config.canonical_yaml` (sorted keys) after
+    forcing ``experiment.id`` to ``null`` so the ledger stamp cannot circularly
+    affect the identity. This is the documented content hash for Phase 0.
     """
-    payload = canonical_yaml(config).encode("utf-8")
+    payload = canonical_yaml(_config_for_hash(config)).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -89,8 +113,14 @@ def make_experiment_id(
     *,
     when: date | datetime | None = None,
 ) -> str:
-    """``UTC_date + '_' + first8(sha256(canonical resolved config))``."""
+    """``UTC_date + '_' + first8(sha256(pre-stamp canonical resolved config))``."""
     return experiment_id_from_hash(content_sha256(config), when=when)
+
+
+def experiment_id_suffix_matches(experiment_id: str, content_hash: str) -> bool:
+    """True if ``experiment_id`` ends with ``_<first8(content_hash)>``."""
+    expected = f"_{content_hash[:8]}"
+    return experiment_id.endswith(expected)
 
 
 def signals_broadcast_code_sha256(
@@ -172,7 +202,7 @@ def freeze_ledger(
     config
         Resolved runtime config (already smoke-merged / device-resolved).
     when
-        Optional date override for the experiment_id prefix (tests).
+        Optional date override for the experiment_id prefix (tests / first freeze).
     package_dir
         ``src/neuronca`` root for signals/broadcast hashing.
     force
@@ -182,8 +212,9 @@ def freeze_ledger(
     Raises
     ------
     LedgerConflictError
-        When an existing primary ledger has a different config content hash or
-        a different signals/broadcast code hash and ``force`` is False.
+        When an existing primary ledger has a different config content hash,
+        a different or missing signals/broadcast code hash, or a tampered
+        experiment_id suffix, and ``force`` is False.
     """
     output_dir = Path(output_dir)
     meta = meta_dir_for(output_dir)
@@ -194,38 +225,53 @@ def freeze_ledger(
 
     existing = load_existing_ledger(output_dir)
     if existing is not None and not force:
-        same_config = existing.content_sha256 == cfg_hash
-        same_code = (not existing.code_sha256) or existing.code_sha256 == code_hash
-        # Prefer full identity match for idempotency (date prefix may differ if
-        # only content hash stored previously without re-reading date).
-        if same_config and same_code:
-            # Ensure all files exist; rewrite missing ones only if content matches.
+        same_config = bool(existing.content_sha256) and existing.content_sha256 == cfg_hash
+        # Exact match required: missing/empty on-disk code hash is a conflict.
+        same_code = bool(existing.code_sha256) and existing.code_sha256 == code_hash
+        id_ok = experiment_id_suffix_matches(existing.experiment_id, cfg_hash)
+
+        if same_config and same_code and id_ok:
+            # Heal meta from trusted inputs: keep first-freeze experiment_id
+            # (date prefix), re-derive thresholds from config, rewrite files.
             _ensure_ledger_files(
                 meta,
                 config=config,
                 experiment_id=existing.experiment_id,
                 content_sha256=cfg_hash,
                 code_sha256=code_hash,
-                thresholds=existing.thresholds or thresholds,
+                thresholds=thresholds,
             )
             return LedgerMeta(
                 experiment_id=existing.experiment_id,
                 content_sha256=cfg_hash,
                 code_sha256=code_hash,
                 meta_dir=meta,
-                thresholds=existing.thresholds or thresholds,
+                thresholds=thresholds,
             )
+
         reasons: list[str] = []
         if not same_config:
             reasons.append(
                 f"config content hash changed "
-                f"(existing={existing.content_sha256[:12]}… new={cfg_hash[:12]}…)"
+                f"(existing={existing.content_sha256[:12] or '<missing>'}… "
+                f"new={cfg_hash[:12]}…)"
             )
         if not same_code:
+            if not existing.code_sha256:
+                reasons.append(
+                    "signals/broadcast code hash missing on disk; "
+                    "refusing to overwrite primary ledger without recorded code hash"
+                )
+            else:
+                reasons.append(
+                    f"signals/broadcast code hash changed "
+                    f"(existing={existing.code_sha256[:12]}… new={code_hash[:12]}…); "
+                    "do not overwrite primary ledger after signal code changes"
+                )
+        if same_config and same_code and not id_ok:
             reasons.append(
-                f"signals/broadcast code hash changed "
-                f"(existing={existing.code_sha256[:12]}… new={code_hash[:12]}…); "
-                "do not overwrite primary ledger after signal code changes"
+                f"experiment_id suffix does not match content hash "
+                f"(id={existing.experiment_id!r}, expected suffix _{cfg_hash[:8]})"
             )
         raise LedgerConflictError(
             "refusing to overwrite primary experiment ledger: "
@@ -233,7 +279,7 @@ def freeze_ledger(
             + f". Archive under results/phase0_runs/{exp_id}/ or pass force=True."
         )
 
-    # Allow force or fresh write; if force and existing id date differs, use new id.
+    # Fresh write or force overwrite.
     _ensure_ledger_files(
         meta,
         config=config,
@@ -242,7 +288,6 @@ def freeze_ledger(
         code_sha256=code_hash,
         thresholds=thresholds,
     )
-    # Stamp experiment.id into a copy note only via resolved yaml (config is caller-owned).
     return LedgerMeta(
         experiment_id=exp_id,
         content_sha256=cfg_hash,
@@ -265,11 +310,12 @@ def _ensure_ledger_files(
     _write_text(meta / EXPERIMENT_ID_FILE, experiment_id)
     resolved_path = meta / CONFIG_RESOLVED_FILE
     # Inject frozen experiment id into the archived resolved config copy.
-    archived = dict(config)
+    archived = copy.deepcopy(dict(config))
     exp = dict(archived.get("experiment") or {})
     exp["id"] = experiment_id
     archived["experiment"] = exp
-    resolved_path.write_text(canonical_yaml(archived), encoding="utf-8")
+    body = canonical_yaml(archived)
+    resolved_path.write_text(_RESOLVED_HEADER + body, encoding="utf-8")
     _write_text(meta / CONFIG_HASH_FILE, content_sha256)
     _write_text(meta / CODE_HASH_FILE, code_sha256)
     thr_path = meta / THRESHOLDS_FILE
