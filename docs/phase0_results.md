@@ -57,6 +57,38 @@ Pre-declared thresholds (copy from `meta/thresholds.json`; do not edit post-hoc)
 | **Catastrophic fail (annotation)** | \(\max_c \bar\rho(c) <\) `fail_rho_ceiling` at stationary late | ceiling **0.30** | max mean ρ=`___` | ☐ |
 | **Weak shift** | Mean `gt_shift_disagreement` (ρ_shift) ≥ ceiling | ceiling **0.90** → `PASS_WEAK_SHIFT` if recovered | ρ_shift mean=`___` | ☐ |
 
+### GEVB FA alignment (pre-registered annotation — does not flip `phase1_go`)
+
+Locked in `meta/thresholds.json` **before** the primary run. Source:
+`eval/gevb_alignment_verdict.py` + `configs/default.yaml`.
+
+**Metric:** per seed, mean over layers of `fa_signal_angle_deg` at stationary
+`late` (from `gevb_alignment.csv`). Aggregate = mean over seeds.
+
+| Status | Rule (declared) | Observed | Met? |
+|--------|-----------------|----------|------|
+| **CONVERGED** | mean_late ≤ **60°** AND ≥ **2/3** seeds have layer-mean ≤ **70°** | mean=`___`; seeds ≤70°=`___`/3 | ☐ |
+| **STALLED** | mean_late ≥ **75°** OR (early→late improvement < **10°** AND late ≥ **70°**) | mean=`___`; Δ early→late=`___` | ☐ |
+| **PARTIAL** | otherwise (with ≥2 seeds) | — | ☐ |
+| **INSUFFICIENT_DATA** | <2 seeds with finite late FA (e.g. smoke) | n_seeds=`___` | ☐ |
+
+**Process rules (also frozen):**
+1. Do **not** extend epochs, retune B_ℓ scale, or re-draw feedback based on primary trajectories.
+2. “Maybe more training” → **new** `experiment_id`, doubled epochs (40 / 30+30), **same** angle bars only.
+3. Alignment status never flips `phase1_go` by itself.
+
+**ρ × alignment matrix (annotation only):**
+
+| alignment | GEVB late edge ρ | Interpretation |
+|-----------|------------------|----------------|
+| CONVERGED | high / best_local | FA working as theory suggests |
+| CONVERGED | low / last | Serious: teaching signal aligned, proxy still poor |
+| STALLED | low / last | Expected under FA lag; not validated at this budget |
+| STALLED | high | Suspicious; investigate before trusting |
+| PARTIAL | anything | Inconclusive for FA |
+
+Paste from `aggregate/gevb_alignment_verdict.json` / `verdict.json → gevb_alignment`.
+
 ### Verdict enum (reference)
 
 ```

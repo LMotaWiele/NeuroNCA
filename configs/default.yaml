@@ -78,6 +78,23 @@ eval:
     fail_rho_ceiling: 0.30              # catastrophic_fail annotation if max mean ρ < this
     relative_recovery_factor: 0.9       # secondary log only; not a pass predicate
     # weak_shift uses eval.gt_shift_disagreement_ceiling (single source of truth)
+    #
+    # --- GEVB FA alignment (pre-registered BEFORE primary 3-seed run) ---
+    # Metric: per seed, mean over layers of fa_signal_angle_deg at stationary late.
+    # Aggregate: mean over seeds of that layer-mean.
+    # CONVERGED: mean_late ≤ 60° AND ≥2/3 seeds have layer-mean ≤ 70°.
+    # STALLED:   mean_late ≥ 75° OR (early→late improvement < 10° AND late ≥ 70°).
+    # PARTIAL:   otherwise (with ≥2 seeds).
+    # Do NOT retune these after seeing primary trajectories. Follow-up = new
+    # experiment_id, doubled epochs, same bars only (see gevb_alignment_verdict.py).
+    gevb_fa_converged_mean_deg: 60.0
+    gevb_fa_stalled_mean_deg: 75.0
+    gevb_fa_seed_floor_deg: 70.0
+    gevb_fa_seed_floor_min_count: 2
+    gevb_fa_min_improvement_deg: 10.0
+    gevb_fa_min_layers: 3
+    gevb_fa_late_tag: late
+    gevb_fa_early_tag: early
 
 tasks:
   shift_type: label_permutation

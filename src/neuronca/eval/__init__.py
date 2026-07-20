@@ -23,6 +23,16 @@ from neuronca.eval.time_lag import (
     compute_rho_rec,
     first_crossing,
 )
+from neuronca.eval.gevb_alignment_verdict import (
+    ALIGNMENT_CONVERGED,
+    ALIGNMENT_INSUFFICIENT_DATA,
+    ALIGNMENT_PARTIAL,
+    ALIGNMENT_STALLED,
+    GevbAlignmentThresholds,
+    GevbAlignmentVerdict,
+    aggregate_gevb_alignment_verdict,
+    decide_alignment_status,
+)
 from neuronca.eval.verdict import (
     SeedLagCurve,
     VerdictResult,
@@ -33,6 +43,14 @@ from neuronca.eval.verdict import (
 )
 
 __all__ = [
+    "ALIGNMENT_CONVERGED",
+    "ALIGNMENT_INSUFFICIENT_DATA",
+    "ALIGNMENT_PARTIAL",
+    "ALIGNMENT_STALLED",
+    "GevbAlignmentThresholds",
+    "GevbAlignmentVerdict",
+    "aggregate_gevb_alignment_verdict",
+    "decide_alignment_status",
     "CorrelationResult",
     "LayerCorrelation",
     "correlate_layers",

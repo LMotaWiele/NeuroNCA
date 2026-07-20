@@ -32,6 +32,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from neuronca.eval.gevb_alignment_verdict import (  # noqa: E402
+    GevbAlignmentThresholds,
+    aggregate_gevb_alignment_verdict,
+)
 from neuronca.eval.verdict import (  # noqa: E402
     SeedLagCurve,
     VerdictResult,
@@ -48,6 +52,17 @@ from neuronca.io.ledger import load_existing_ledger  # noqa: E402
 
 DEFAULT_CONFIG = "configs/default.yaml"
 DEFAULT_RESULTS_ROOT = "results/phase0"
+
+
+def _json_safe_obj(obj: Any) -> Any:
+    """Replace non-finite floats with None for portable JSON."""
+    if isinstance(obj, Mapping):
+        return {str(k): _json_safe_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe_obj(v) for v in obj]
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    return obj
 DEFAULT_SEEDS = (0, 1, 2)
 GT_MEASURE = "grad_abs"
 STATIONARY_LATE_TAG = "late"
@@ -384,9 +399,15 @@ def aggregate_phase0_verdict(
     stationary_summaries: Mapping[int, Mapping[str, Any]] | None = None,
     task_shift_summaries: Mapping[int, Mapping[str, Any]] | None = None,
     thresholds: VerdictThresholds | None = None,
+    alignment_thresholds: GevbAlignmentThresholds | Mapping[str, Any] | None = None,
     experiment_id: str | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> tuple[VerdictResult, Path]:
-    """Build multi-seed verdict **only** through verdict.py + write_verdict_json.
+    """Build multi-seed ρ verdict + pre-registered GEVB FA alignment annotation.
+
+    ρ verdict goes through :func:`aggregate_verdict` only. Alignment uses
+    :func:`aggregate_gevb_alignment_verdict` with thresholds frozen in the
+    ledger / config (never retuned after primary launch).
 
     Returns
     -------
@@ -428,6 +449,33 @@ def aggregate_phase0_verdict(
         thresholds=thresholds,
     )
 
+    # Pre-registered FA alignment annotation (does not flip phase1_go).
+    thr_map = extract_thresholds(config) if config is not None else {}
+    if alignment_thresholds is None:
+        align_thr = GevbAlignmentThresholds.from_mapping(thr_map)
+    elif isinstance(alignment_thresholds, GevbAlignmentThresholds):
+        align_thr = alignment_thresholds
+    else:
+        align_thr = GevbAlignmentThresholds.from_mapping(alignment_thresholds)
+
+    align_verdict = aggregate_gevb_alignment_verdict(
+        results_root,
+        seeds,
+        thresholds=align_thr,
+        condition="stationary",
+    )
+
+    # GEVB ρ at late (for the interpretation matrix note)
+    gevb_rho = mean_rho.get("eligibility_gevb_rf", float("nan"))
+    notes = list(result.notes)
+    notes.append(
+        f"gevb_alignment_status={align_verdict.alignment_status} "
+        f"mean_late_fa_deg={align_verdict.mean_late_fa_deg} "
+        f"gevb_mean_edge_rho={gevb_rho}"
+    )
+    # Mutate notes on a shallow copy-friendly path: VerdictResult is a dataclass
+    result.notes = notes
+
     all_summaries: list[Mapping[str, Any]] = []
     if stationary_summaries:
         all_summaries.extend(stationary_summaries.values())
@@ -436,7 +484,20 @@ def aggregate_phase0_verdict(
     eid = experiment_id or resolve_experiment_id(results_root, summaries=all_summaries)
 
     verdict_path = results_root / "aggregate" / "verdict.json"
-    write_verdict_json(verdict_path, result, experiment_id=eid, overwrite=True)
+    write_verdict_json(
+        verdict_path,
+        result,
+        experiment_id=eid,
+        overwrite=True,
+        extra={"gevb_alignment": align_verdict.to_dict()},
+    )
+    # Also write a dedicated alignment verdict artifact for easy inspection.
+    align_path = results_root / "aggregate" / "gevb_alignment_verdict.json"
+    align_payload = _json_safe_obj(align_verdict.to_dict())
+    align_path.write_text(
+        json.dumps(align_payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
     return result, verdict_path
 
 
@@ -510,11 +571,23 @@ def run_phase0(
         stationary_summaries=stationary_summaries or None,
         task_shift_summaries=task_shift_summaries or None,
         thresholds=thr,
+        config=cfg,
     )
+
+    align_status = None
+    align_path = results_root / "aggregate" / "gevb_alignment_verdict.json"
+    if align_path.is_file():
+        try:
+            align_status = json.loads(align_path.read_text(encoding="utf-8")).get(
+                "alignment_status"
+            )
+        except (OSError, json.JSONDecodeError):
+            align_status = None
 
     print(
         f"[phase0] verdict={result.verdict} phase1_go={result.phase1_go} "
-        f"best_local={result.best_local} → {verdict_path}",
+        f"best_local={result.best_local} gevb_alignment={align_status} "
+        f"→ {verdict_path}",
         flush=True,
     )
     return {
@@ -526,6 +599,7 @@ def run_phase0(
         "recovered": result.recovered,
         "weak_shift": result.weak_shift,
         "catastrophic_fail": result.catastrophic_fail,
+        "gevb_alignment_status": align_status,
         "verdict_path": str(verdict_path),
         "experiment_id": resolve_experiment_id(
             results_root,
