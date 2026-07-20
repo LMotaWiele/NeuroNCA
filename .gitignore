@@ -47,7 +47,6 @@ results/**
 
 # Data downloads (repo-root only; do not ignore src/neuronca/data/)
 /data/
-/data/mnist/
 **/MNIST/
 
 # Checkpoints and tensors

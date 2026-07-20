@@ -70,7 +70,7 @@ eval:
     shift_recovery_min_seed_count: 2    # of 3 seeds must have finite t*_abs
     fail_rho_ceiling: 0.30              # catastrophic_fail annotation if max mean ρ < this
     relative_recovery_factor: 0.9       # secondary log only; not a pass predicate
-    weak_shift_rho_ceiling: 0.90        # alias of gt_shift_disagreement_ceiling for clarity
+    # weak_shift uses eval.gt_shift_disagreement_ceiling (single source of truth)
 
 tasks:
   shift_type: label_permutation
