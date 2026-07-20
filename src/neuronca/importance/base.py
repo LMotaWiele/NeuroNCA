@@ -24,13 +24,14 @@ class ImportanceResult:
         edge: ``fc*`` → ``[n_out, n_in]`` scores matching ``Linear.weight`` layout.
         edge_index: Optional per-layer index/mask of scored edges (sparse GT-2);
             ``None`` for dense measures (GT-1, Fisher).
-        extras: Named secondary columns, e.g. ``ablation_signed``, ``grad_movement``.
+        extras: Named secondary columns, e.g. ``grad_movement`` (layer→tensor) or
+            nested ``ablation_signed`` ``{"neuron": {...}, "edge": {...}}``.
     """
 
     neuron: dict[str, Tensor]
     edge: dict[str, Tensor]
     edge_index: dict[str, Tensor] | None = None
-    extras: dict[str, dict[str, Tensor]] = field(default_factory=dict)
+    extras: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable

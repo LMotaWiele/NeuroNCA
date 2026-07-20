@@ -203,8 +203,10 @@ def test_ablation_neuron_relu_and_weight_restore():
         assert result.neuron[name].shape == (n_out,)
         # relu transform → nonnegative
         assert (result.neuron[name] >= 0).all()
-        signed = result.extras["ablation_signed_neuron"][name]
+        signed = result.extras["ablation_signed"]["neuron"][name]
         assert torch.allclose(result.neuron[name], signed.clamp(min=0.0))
+        # Convenience alias matches nested map
+        assert result.extras["ablation_signed_neuron"][name] is signed
 
     after = _clone_state(model)
     for k in before:
@@ -229,12 +231,13 @@ def test_ablation_edge_with_fixed_mask():
         assert torch.equal(result.edge_index[name], mask[name].cpu())
         # Non-masked positions must be zero
         assert (result.edge[name][~mask[name].cpu()] == 0).all()
-        # Masked positions: relu of signed
-        signed = result.extras["ablation_signed_edge"][name]
+        # Masked positions: relu of signed (nested diagnostic key)
+        signed = result.extras["ablation_signed"]["edge"][name]
         assert torch.allclose(
             result.edge[name][mask[name].cpu()],
             signed[mask[name].cpu()].clamp(min=0.0),
         )
+        assert result.extras["ablation_signed_edge"][name] is signed
 
     after = _clone_state(model)
     for k in before:
@@ -292,3 +295,94 @@ def test_gt_protocol_accepts_edge_sample_mask_kwarg():
     AblationImportance(edge_ablation_sample=2, seed=0, neuron_ablation="none").compute(
         model, loader, criterion, edge_sample_mask=mask
     )
+
+
+def test_ablation_signed_nested_no_key_collision():
+    """Both neuron + edge ablation: signed scores nested, no layer-key overwrite."""
+    set_seed(0)
+    model = _tiny_mlp()
+    loader = _toy_loader(n=12, batch_size=6)
+    criterion = nn.CrossEntropyLoss()
+    mask = build_edge_ablation_mask(model, seed=0, sample_per_layer=3, n_bins=2)
+
+    gt = AblationImportance(
+        edge_ablation_sample=3,
+        seed=0,
+        neuron_ablation="all_hidden",
+        hidden_layers=("fc1", "fc2", "fc3"),
+    )
+    result = gt.compute(model, loader, criterion, edge_sample_mask=mask)
+
+    signed = result.extras["ablation_signed"]
+    assert set(signed.keys()) == {"neuron", "edge"}
+    # Neuron vectors remain under nested neuron map (not overwritten by edges).
+    for name in ("fc1", "fc2", "fc3"):
+        n_out, n_in = model.layer_shapes()[name]
+        assert name in signed["neuron"]
+        assert signed["neuron"][name].shape == (n_out,)
+        assert name in signed["edge"]
+        assert signed["edge"][name].shape == (n_out, n_in)
+    # Aliases point at the same maps
+    assert result.extras["ablation_signed_neuron"] is signed["neuron"]
+    assert result.extras["ablation_signed_edge"] is signed["edge"]
+
+
+def test_edge_mask_cached_across_compute_despite_weight_change():
+    """Instance caches first-drawn mask so weight changes do not redraw support."""
+    set_seed(0)
+    model = _tiny_mlp()
+    loader = _toy_loader(n=8, batch_size=4)
+    criterion = nn.CrossEntropyLoss()
+
+    gt = AblationImportance(
+        edge_ablation_sample=5,
+        seed=3,
+        neuron_ablation="none",
+        n_bins=2,
+    )
+    r1 = gt.compute(model, loader, criterion)
+    mask1 = {k: v.clone() for k, v in r1.edge_index.items()}
+
+    # Mutate |W| so a fresh stratified draw would differ.
+    with torch.no_grad():
+        for _, mod in model.named_linear_layers():
+            mod.weight.mul_(0.01)
+            mod.weight.add_(torch.randn_like(mod.weight))
+
+    r2 = gt.compute(model, loader, criterion)
+    for name in mask1:
+        assert torch.equal(mask1[name], r2.edge_index[name]), name
+
+    # After clear, a rebuild with changed |W| may differ on at least one layer.
+    gt.clear_edge_mask_cache()
+    r3 = gt.compute(model, loader, criterion)
+    # Cache is set again after clear+compute
+    assert gt._cached_edge_sample_mask is not None
+    # r3 uses the new cache (may or may not equal mask1 depending on |W|);
+    # verify second bare call still reuses that post-clear cache.
+    r4 = gt.compute(model, loader, criterion)
+    for name in r3.edge_index:
+        assert torch.equal(r3.edge_index[name], r4.edge_index[name]), name
+
+
+def test_importance_package_does_not_import_signals():
+    """Structural isolation: neuronca.importance must not import neuronca.signals."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "neuronca" / "importance"
+    forbidden_prefixes = ("neuronca.signals",)
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    mod = alias.name
+                    assert not any(
+                        mod == p or mod.startswith(p + ".") for p in forbidden_prefixes
+                    ), f"{path.name} imports {mod}"
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                assert not any(
+                    mod == p or mod.startswith(p + ".") for p in forbidden_prefixes
+                ), f"{path.name} imports from {mod}"

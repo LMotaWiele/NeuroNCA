@@ -4,7 +4,8 @@ Primary ranking transform (pre-registered)::
 
     I^{abl+}_j = max(0, L_ablate - L_base)
 
-Signed ΔL is logged under extras key ``ablation_signed``.
+Signed ΔL is logged under extras key ``ablation_signed`` as nested maps
+``{"neuron": {fc*: [n_out]}, "edge": {fc*: [n_out, n_in]}}`` (no key collision).
 
 Neuron ablation covers hidden posts (default ``fc1,fc2,fc3``). Connection
 ablation uses a **fixed** per-seed edge mask (default 512 edges/layer,
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import torch
 import torch.nn as nn
@@ -108,20 +109,16 @@ def build_edge_ablation_mask(
             masks[name] = mask
             continue
 
-        # Stratify by |W| quantile bins; sample ~evenly from each occupied bin.
+        # Stratify by |W| rank bins; sample ~evenly from each occupied bin.
         # Equal values → bins may be uneven; we still cap total at k.
-        try:
-            # qcut-like: rank then bucket.
-            order = torch.argsort(abs_flat)
-            bin_ids = torch.empty(numel, dtype=torch.long)
-            # Split ordered indices into n_bins contiguous rank groups.
-            edges = torch.linspace(0, numel, n_bins + 1).long()
-            for b in range(n_bins):
-                lo, hi = int(edges[b].item()), int(edges[b + 1].item())
-                if hi > lo:
-                    bin_ids[order[lo:hi]] = b
-        except Exception:
-            bin_ids = torch.zeros(numel, dtype=torch.long)
+        # qcut-like: rank then bucket into n_bins contiguous rank groups.
+        order = torch.argsort(abs_flat)
+        bin_ids = torch.empty(numel, dtype=torch.long)
+        edges = torch.linspace(0, numel, n_bins + 1).long()
+        for b in range(n_bins):
+            lo, hi = int(edges[b].item()), int(edges[b + 1].item())
+            if hi > lo:
+                bin_ids[order[lo:hi]] = b
 
         selected: list[int] = []
         # Per-bin target; distribute remainder to higher |W| bins first.
@@ -223,6 +220,13 @@ class AblationImportance:
         self.edge_mask_seed_offset = int(edge_mask_seed_offset)
         self.n_bins = int(n_bins)
         self.hidden_layers = tuple(hidden_layers)
+        # Cached fixed mask: drawn once per instance so multi-snapshot calls do
+        # not rebuild from current |W| (design: fixed per-seed mask).
+        self._cached_edge_sample_mask: dict[str, Tensor] | None = None
+
+    def clear_edge_mask_cache(self) -> None:
+        """Drop the instance-cached edge mask (next compute redraws if needed)."""
+        self._cached_edge_sample_mask = None
 
     def compute(
         self,
@@ -236,6 +240,14 @@ class AblationImportance:
 
         Does not call any local-signal update path. Restores weights/hooks
         after each unit ablation so the model is left unchanged.
+
+        **Fixed edge mask (multi-snapshot):** When ``edge_sample_mask`` is
+        omitted, the first call draws a stratified mask and **caches** it on
+        this instance for subsequent ``compute`` calls (same edges even if
+        weights change). Multi-snapshot runners may also pass a prebuilt mask
+        explicitly (or load via :func:`load_edge_ablation_mask`) — that path
+        always wins and is not overwritten into the cache unless no cache
+        exists yet. Use :meth:`clear_edge_mask_cache` to force a redraw.
         """
         device = resolve_device(model)
         model.to(device)
@@ -256,35 +268,32 @@ class AblationImportance:
         edge_index: dict[str, Tensor] | None = None
 
         if self.edge_ablation_sample > 0 or edge_sample_mask is not None:
-            if edge_sample_mask is None:
-                edge_sample_mask = build_edge_ablation_mask(
-                    model,
-                    seed=self.seed,
-                    sample_per_layer=self.edge_ablation_sample,
-                    n_bins=self.n_bins,
-                    edge_mask_seed_offset=self.edge_mask_seed_offset,
-                )
+            mask = self._resolve_edge_mask(model, edge_sample_mask)
             edge, edge_signed, edge_index = self._ablate_edges(
                 model,
                 probe_loader,
                 criterion,
                 l_base,
                 device,
-                edge_sample_mask,
+                mask,
             )
 
         if was_training:
             model.train()
 
-        extras: dict[str, dict[str, Tensor]] = {
-            "ablation_signed": {**neuron_signed, **edge_signed},
+        # Nested structure avoids layer-key collision between neuron [n_out]
+        # and edge [n_out, n_in] under the design diagnostic name.
+        ablation_signed: dict[str, dict[str, Tensor]] = {
+            "neuron": neuron_signed,
+            "edge": edge_signed,
         }
-        # Keep neuron-only and edge-only signed maps for convenience.
-        if neuron_signed:
-            extras["ablation_signed_neuron"] = neuron_signed
-        if edge_signed:
-            extras["ablation_signed_edge"] = edge_signed
-        extras["l_base"] = {"value": torch.tensor([l_base], dtype=torch.float32)}
+        extras: dict[str, Any] = {
+            "ablation_signed": ablation_signed,
+            # Convenience aliases (same objects as nested maps).
+            "ablation_signed_neuron": neuron_signed,
+            "ablation_signed_edge": edge_signed,
+            "l_base": {"value": torch.tensor([l_base], dtype=torch.float32)},
+        }
 
         return ImportanceResult(
             neuron=neuron,
@@ -292,6 +301,37 @@ class AblationImportance:
             edge_index=edge_index,
             extras=extras,
         )
+
+    def _resolve_edge_mask(
+        self,
+        model: nn.Module,
+        edge_sample_mask: dict[str, Tensor] | None,
+    ) -> dict[str, Tensor]:
+        """Return caller mask, cached mask, or newly drawn (then cached) mask."""
+        if edge_sample_mask is not None:
+            # Explicit mask always used; also seed the cache if empty so later
+            # bare compute() calls stay aligned with the first explicit pass.
+            if self._cached_edge_sample_mask is None:
+                self._cached_edge_sample_mask = {
+                    k: v.detach().cpu().bool().clone()
+                    for k, v in edge_sample_mask.items()
+                }
+            return edge_sample_mask
+
+        if self._cached_edge_sample_mask is not None:
+            return self._cached_edge_sample_mask
+
+        drawn = build_edge_ablation_mask(
+            model,
+            seed=self.seed,
+            sample_per_layer=self.edge_ablation_sample,
+            n_bins=self.n_bins,
+            edge_mask_seed_offset=self.edge_mask_seed_offset,
+        )
+        self._cached_edge_sample_mask = {
+            k: v.detach().cpu().bool().clone() for k, v in drawn.items()
+        }
+        return self._cached_edge_sample_mask
 
     def _apply_rank(self, delta: Tensor) -> Tensor:
         if self.rank_transform == "relu":
