@@ -248,11 +248,23 @@ def test_aggregate_only_path_uses_verdict_module(tmp_path: Path):
 
 
 def test_reproduce_sh_is_executable():
+    """Primary reproduce path is full Phase 0 (no --smoke by default)."""
     path = _REPO / "scripts" / "reproduce.sh"
     assert path.is_file()
     mode = path.stat().st_mode
     assert mode & 0o111, "reproduce.sh must be executable"
     text = path.read_text(encoding="utf-8")
     assert "run_phase0.py" in text
-    assert "--smoke" in text
     assert "set -euo pipefail" in text
+    # Design primary entrypoint: full default run (no forced --smoke).
+    assert 'python scripts/run_phase0.py --config configs/default.yaml' in text
+    # Default branch must not always append --smoke; optional SMOKE=1 only.
+    lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if "run_phase0.py" in ln and not ln.strip().startswith("#")
+    ]
+    default_lines = [ln for ln in lines if "--smoke" not in ln]
+    assert default_lines, "reproduce.sh must invoke full primary run without --smoke"
+    # Optional quick path via SMOKE=1 env (not the default).
+    assert "SMOKE" in text
