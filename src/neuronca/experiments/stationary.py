@@ -40,7 +40,12 @@ from neuronca.io.artifacts import (
     seed_run_dir,
     write_correlations_csv,
 )
-from neuronca.io.config import DEFAULT_CONFIG_PATH, deep_merge, load_yaml
+from neuronca.io.config import (
+    DEFAULT_CONFIG_PATH,
+    SmokeConfigError,
+    deep_merge,
+    load_yaml,
+)
 from neuronca.io.ledger import LedgerMeta, freeze_ledger, meta_dir_for
 from neuronca.io.seed import set_seed
 from neuronca.models.mlp import MLPReasoningNet
@@ -53,16 +58,65 @@ from neuronca.training.optim import build_optimizer
 
 
 def _apply_smoke_overrides(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Deep-merge the base ``smoke:`` block onto a copy of ``config``."""
+    """Deep-merge the base ``smoke:`` block onto a copy of ``config``.
+
+    Aligns with :func:`neuronca.io.config.load_config`: if ``smoke=True`` but
+    no usable base smoke mapping exists, raise :class:`SmokeConfigError` so CI
+    cannot silently run a full-budget config.
+    """
     cfg = copy.deepcopy(dict(config))
     try:
         base = load_yaml(DEFAULT_CONFIG_PATH)
-    except FileNotFoundError:
-        return cfg
+    except FileNotFoundError as exc:
+        raise SmokeConfigError(
+            f"smoke=True but defaults config not found at {DEFAULT_CONFIG_PATH}. "
+            "Define a non-empty top-level smoke: mapping on the defaults file."
+        ) from exc
     smoke_block = base.get("smoke")
-    if isinstance(smoke_block, Mapping) and smoke_block:
-        cfg = deep_merge(cfg, smoke_block)
+    if not isinstance(smoke_block, Mapping) or not smoke_block:
+        raise SmokeConfigError(
+            f"smoke=True but no usable smoke: block found in base config "
+            f"{DEFAULT_CONFIG_PATH}. Define a non-empty top-level smoke: mapping "
+            "on the defaults file; overrides must not be relied on to supply it."
+        )
+    cfg = deep_merge(cfg, smoke_block)
     cfg.pop("smoke", None)
+    return cfg
+
+
+def _config_for_ledger(
+    config: Mapping[str, Any],
+    *,
+    results_root: Path,
+    run_seed: int,
+) -> dict[str, Any]:
+    """Build a **seed-invariant** config for primary ledger freeze.
+
+    Multi-seed Phase 0 layout is one shared ``{results_root}/meta/`` plus
+    per-seed artifact dirs ``stationary/seed_{k}/``. The content hash must
+    **not** include the per-run seed, or a second seed on the same root raises
+    :class:`~neuronca.io.ledger.LedgerConflictError`.
+
+    Top-level ``seed`` is left as in the shared experiment config (or the first
+    entry of ``experiment.seeds``). The per-run seed is applied only via
+    :func:`set_seed` and seed-dependent constructors after freeze.
+    """
+    cfg = copy.deepcopy(dict(config))
+    cfg.pop("smoke", None)
+    exp = dict(cfg.get("experiment") or {})
+    exp.setdefault("output_dir", str(results_root))
+    seeds = exp.get("seeds")
+    if not isinstance(seeds, list) or not seeds:
+        # Single-seed caller: record the run seed in the shared list only.
+        exp["seeds"] = [int(run_seed)]
+    else:
+        exp["seeds"] = [int(s) for s in seeds]
+    cfg["experiment"] = exp
+    # Prefer a stable top-level seed from the experiment seeds list (not run_seed
+    # alone) so freeze is identical across seeds 0/1/2 for the same config.
+    if "seed" not in cfg or cfg.get("seed") is None:
+        cfg["seed"] = int(exp["seeds"][0])
+    # Never overwrite cfg["seed"] with run_seed — that would change the hash.
     return cfg
 
 
@@ -341,13 +395,17 @@ def run_stationary(
     ----------
     config
         Resolved runtime config (defaults ⊕ stationary ⊕ optional smoke).
-        When ``smoke=True``, the base ``smoke:`` block is merged if not already.
+        When ``smoke=True``, the base ``smoke:`` block is merged if not already;
+        raises :class:`~neuronca.io.config.SmokeConfigError` if no usable smoke
+        block exists (same contract as :func:`~neuronca.io.config.load_config`).
     results_root
         Experiment root (e.g. ``results/phase0``). Ledger freezes under
-        ``{results_root}/meta/``; artifacts under
-        ``{results_root}/stationary/seed_{seed}/``.
+        ``{results_root}/meta/`` once per shared experiment config (seed-invariant
+        content hash); artifacts under ``{results_root}/stationary/seed_{seed}/``.
+        Multiple seeds may share the same ``results_root``.
     seed
-        Run seed (model init, data split, GEVB B, edge mask).
+        Run seed (model init, data split, GEVB B, edge mask). Recorded in per-seed
+        artifacts only — **not** stamped into the ledger content hash.
     smoke
         If True, apply CI smoke overrides (1 epoch, probe 128, skip edge
         ablation when configured).
@@ -363,17 +421,23 @@ def run_stationary(
         cfg = _apply_smoke_overrides(cfg)
     cfg.pop("smoke", None)
 
-    # Ensure seed is stamped into the effective config used for ledger hash.
-    cfg["seed"] = int(seed)
-    exp = dict(cfg.get("experiment") or {})
-    exp.setdefault("output_dir", str(results_root))
-    cfg["experiment"] = exp
+    # Freeze ledger once per experiment with a seed-invariant shared config.
+    # Per-run seed is applied after freeze (set_seed / loaders / GEVB / masks)
+    # and recorded only in per-seed artifacts (CSV / summary), not the content
+    # hash — so seeds 0/1/2 share one {results_root}/meta/.
+    ledger_cfg = _config_for_ledger(cfg, results_root=results_root, run_seed=int(seed))
+    # Keep runtime cfg aligned with ledger (output_dir / seeds list) but do not
+    # stamp the per-run seed into top-level cfg["seed"].
+    cfg["experiment"] = copy.deepcopy(ledger_cfg["experiment"])
+    if "seed" in ledger_cfg:
+        cfg["seed"] = ledger_cfg["seed"]
 
     ensure_results_tree(results_root)
-    ledger: LedgerMeta = freeze_ledger(results_root, cfg)
+    ledger: LedgerMeta = freeze_ledger(results_root, ledger_cfg)
     meta_dir = meta_dir_for(results_root)
     run_dir = seed_run_dir(results_root, "stationary", int(seed))
 
+    # Per-run RNG only — after freeze so multi-seed callers share one ledger.
     set_seed(int(seed))
 
     train_cfg = dict(cfg.get("train") or {})

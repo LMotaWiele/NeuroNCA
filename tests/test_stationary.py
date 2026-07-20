@@ -5,23 +5,21 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from neuronca.io.config import load_config_named
-from neuronca.experiments.stationary import run_stationary
+from neuronca.experiments.stationary import _apply_smoke_overrides, run_stationary
+from neuronca.io.config import SmokeConfigError, load_config_named
 
 
-@pytest.fixture(scope="module")
-def smoke_config() -> dict:
-    """Resolved stationary config with smoke overrides + tiny step budget."""
+def _tiny_smoke_cfg() -> dict:
+    """Shared smoke-capped config for multi-seed / smoke tests."""
     cfg = load_config_named("stationary", smoke=True)
-    # Cap steps so CI finishes quickly on full MNIST (still real data).
     train = dict(cfg.get("train") or {})
-    train["max_steps_per_epoch"] = 4
+    train["max_steps_per_epoch"] = 2
     train["batch_size"] = 32
     cfg["train"] = train
-    # Keep probe small (smoke already sets 128); shrink further for speed.
     data = dict(cfg.get("data") or {})
     data["probe_size"] = 64
     data["num_workers"] = 0
@@ -34,9 +32,22 @@ def smoke_config() -> dict:
     cfg["gt"] = gt
     eval_cfg = dict(cfg.get("eval") or {})
     eval_cfg["coarse_gt_measures"] = ["grad_abs"]
-    # Lower min_pairs for tiny probes / early uninformative scores.
     eval_cfg["spearman_min_pairs"] = 8
     cfg["eval"] = eval_cfg
+    # Multi-seed list from Phase 0 defaults (shared ledger identity).
+    exp = dict(cfg.get("experiment") or {})
+    exp["seeds"] = [0, 1, 2]
+    cfg["experiment"] = exp
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def smoke_config() -> dict:
+    """Resolved stationary config with smoke overrides + tiny step budget."""
+    cfg = _tiny_smoke_cfg()
+    train = dict(cfg.get("train") or {})
+    train["max_steps_per_epoch"] = 4
+    cfg["train"] = train
     return cfg
 
 
@@ -133,3 +144,58 @@ def test_run_stationary_smoke_flag_merges_overrides(tmp_path: Path):
     assert summary["epochs"] == 1
     assert summary["global_step"] <= 4  # max_steps kept from overrides merge order
     assert (tmp_path / "phase0" / "stationary" / "seed_0" / "correlations.csv").is_file()
+
+
+def test_multi_seed_shares_ledger_without_hash_clash(tmp_path: Path):
+    """Two seeds on the same results_root share one meta/ (no LedgerConflictError)."""
+    cfg = _tiny_smoke_cfg()
+    results_root = tmp_path / "phase0"
+
+    s0 = run_stationary(cfg, results_root, seed=0, smoke=True)
+    s1 = run_stationary(cfg, results_root, seed=1, smoke=True)
+
+    assert s0["experiment_id"] == s1["experiment_id"]
+    assert s0["content_sha256"] == s1["content_sha256"]
+    assert s0["seed"] == 0
+    assert s1["seed"] == 1
+
+    exp_id = (results_root / "meta" / "experiment_id.txt").read_text(encoding="utf-8").strip()
+    assert exp_id == s0["experiment_id"]
+
+    assert (results_root / "stationary" / "seed_0" / "correlations.csv").is_file()
+    assert (results_root / "stationary" / "seed_1" / "correlations.csv").is_file()
+    assert (results_root / "stationary" / "seed_0" / "summary.json").is_file()
+    assert (results_root / "stationary" / "seed_1" / "summary.json").is_file()
+
+    # Per-seed GEVB matrices may both exist under shared meta/
+    assert (results_root / "meta" / "gevb_B_seed0.pt").is_file()
+    assert (results_root / "meta" / "gevb_B_seed1.pt").is_file()
+
+
+def test_apply_smoke_overrides_raises_when_defaults_missing():
+    """smoke=True must hard-fail (SmokeConfigError) if base defaults are gone."""
+    cfg = {"train": {"epochs": 20}}
+    with patch(
+        "neuronca.experiments.stationary.load_yaml",
+        side_effect=FileNotFoundError("missing"),
+    ):
+        with pytest.raises(SmokeConfigError):
+            _apply_smoke_overrides(cfg)
+
+
+def test_apply_smoke_overrides_raises_when_smoke_block_empty():
+    """Empty / null smoke mapping must not silently keep full budget."""
+    cfg = {"train": {"epochs": 20}}
+    with patch(
+        "neuronca.experiments.stationary.load_yaml",
+        return_value={"seed": 0, "smoke": None},
+    ):
+        with pytest.raises(SmokeConfigError):
+            _apply_smoke_overrides(cfg)
+
+    with patch(
+        "neuronca.experiments.stationary.load_yaml",
+        return_value={"seed": 0, "smoke": {}},
+    ):
+        with pytest.raises(SmokeConfigError):
+            _apply_smoke_overrides(cfg)
