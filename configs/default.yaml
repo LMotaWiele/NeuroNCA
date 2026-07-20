@@ -1,0 +1,105 @@
+# Frozen Phase 0 defaults (see docs/design/phase0_local_importance_signal_validation.md).
+# Do not retune signal formulas or thresholds after primary experimental runs.
+
+seed: 0
+device: auto
+
+model:
+  input_dim: 784
+  hidden: [256, 128, 64]
+  num_classes: 10
+
+train:
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  batch_size: 128
+  epochs: 20          # stationary full budget
+  epochs_a: 15        # task-shift phase A
+  epochs_b: 15        # task-shift phase B
+
+data:
+  root: data/mnist
+  num_workers: 2
+  probe_size: 1024
+  # Task A is identity (standard labels); task B is configured under tasks.
+
+broadcast:
+  type: residual_energy_l2
+  per_sample: true
+  also_log_mean_residual_vec: true
+  also_log_scalar_ce: true
+  gevb_feedback:
+    enabled: true
+    seed: 0
+    init: gaussian_scaled   # std = 1/sqrt(C); matrices owned by signals, not encoder
+
+signals:
+  decay: 0.99               # eligibility EMA λ
+  candidates:
+    - activation
+    - hebbian_corr
+    - eligibility_residual_energy
+    - eligibility_gevb_rf
+
+gt:
+  probe_size: 1024
+  grad_batch_size: 256
+  edge_ablation_sample: 512   # per layer
+  neuron_ablation: all_hidden
+  ablation_rank_transform: relu
+  fisher: false
+  edge_mask_seed_offset: 17
+
+eval:
+  lag_window_steps: 500
+  lag_stride: 25
+  lag_gt_measures: [grad_abs]
+  coarse_gt_measures: [grad_abs, ablation_relu]
+  layer_zscore_before_concat: true
+  spearman_min_pairs: 16
+  gt_shift_disagreement_ceiling: 0.90   # weak_shift if mean ρ_shift ≥ this
+  thresholds:
+    stationary_edge_spearman: 0.60      # stationary_pass mean ρ for best_local
+    stationary_seed_floor: 0.50         # per-seed floor
+    stationary_seed_floor_min_count: 2  # min seeds above floor (of 3)
+    stationary_neuron_ablation_spearman: 0.50  # secondary / informational
+    shift_recovery_spearman: 0.60
+    shift_recovery_max_steps: 500
+    shift_recovery_min_seed_count: 2    # of 3 seeds must have finite t*_abs
+    fail_rho_ceiling: 0.30              # catastrophic_fail annotation if max mean ρ < this
+    relative_recovery_factor: 0.9       # secondary log only; not a pass predicate
+    weak_shift_rho_ceiling: 0.90        # alias of gt_shift_disagreement_ceiling for clarity
+
+tasks:
+  shift_type: label_permutation
+  permutation_seed: 123
+  # task A: identity (implicit); task B: label_permutation with permutation_seed
+
+experiment:
+  conditions: [stationary, task_shift]
+  seeds: [0, 1, 2]
+  output_dir: results/phase0
+  id: null   # set by ledger at launch if null
+
+# CI / smoke overrides applied when --smoke is set (or merged from this block).
+smoke:
+  train:
+    epochs: 1
+    epochs_a: 1
+    epochs_b: 1
+    batch_size: 64
+  data:
+    probe_size: 128
+  gt:
+    probe_size: 128
+    edge_ablation_sample: 0   # skip full edge ablation
+    fisher: false
+  eval:
+    lag_window_steps: 50
+    lag_stride: 25
+    lag_gt_measures: [grad_abs]
+    coarse_gt_measures: [grad_abs]
+  experiment:
+    seeds: [0]

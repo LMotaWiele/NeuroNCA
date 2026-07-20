@@ -1,0 +1,11 @@
+# Stationary condition overrides (merge on top of default.yaml).
+# Task A only for the full epoch budget; no task switch.
+
+experiment:
+  conditions: [stationary]
+
+train:
+  epochs: 20
+
+tasks:
+  shift_type: null   # no shift under stationary

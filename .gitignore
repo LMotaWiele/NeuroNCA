@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Type checkers / linters / test caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Experiment results (keep directory via results/.gitkeep)
+results/**
+!results/.gitkeep
+!results/**/.gitkeep
+
+# Data downloads
+data/
+data/mnist/
+**/MNIST/
+
+# Checkpoints and tensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Logs and local env
+*.log
+.env
+.env.*
+
+# Matplotlib
+.mplconfig/

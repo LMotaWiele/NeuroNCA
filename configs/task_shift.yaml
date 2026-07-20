@@ -1,0 +1,13 @@
+# Task-shift condition overrides (merge on top of default.yaml).
+# Task A (identity) for epochs_a, then Task B (label permutation) for epochs_b.
+
+experiment:
+  conditions: [task_shift]
+
+train:
+  epochs_a: 15
+  epochs_b: 15
+
+tasks:
+  shift_type: label_permutation
+  permutation_seed: 123
