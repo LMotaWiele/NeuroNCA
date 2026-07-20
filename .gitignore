@@ -45,9 +45,9 @@ results/**
 !results/.gitkeep
 !results/**/.gitkeep
 
-# Data downloads
-data/
-data/mnist/
+# Data downloads (repo-root only; do not ignore src/neuronca/data/)
+/data/
+/data/mnist/
 **/MNIST/
 
 # Checkpoints and tensors
