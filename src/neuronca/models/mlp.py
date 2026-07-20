@@ -22,6 +22,12 @@ class MLPReasoningNet(nn.Module):
         act_fc2    — post-ReLU after fc2
         act_fc3    — post-ReLU after fc3
         act_fc_out — logits (no nonlinearity)
+
+    Every forward populates ``self.last_activations`` with **detached clones**
+    (no autograd graph; values stable against later in-place edits of the input).
+    When ``return_activations=True``, the returned dict holds live graph-bearing
+    tensors so callers that need them can still use them for diagnostics;
+    training should always backprop through the returned logits tensor alone.
     """
 
     def __init__(
@@ -83,12 +89,14 @@ class MLPReasoningNet(nn.Module):
 
         Args:
             x: Input of shape ``(B, 784)`` or ``(B, 1, 28, 28)`` / ``(B, 28, 28)``.
-            return_activations: If True, also return the activation dict.
+            return_activations: If True, also return a live activation dict
+                (graph-bearing tensors). The module cache ``last_activations``
+                always stores detached clones regardless of this flag.
 
         Returns:
             Logits ``(B, num_classes)``, or ``(logits, activations)`` when
-            ``return_activations`` is True. Always stores activations on
-            ``self.last_activations``.
+            ``return_activations`` is True. Always stores detached activation
+            snapshots on ``self.last_activations``.
         """
         # Flatten image inputs to (B, input_dim).
         if x.dim() > 2:
@@ -104,6 +112,7 @@ class MLPReasoningNet(nn.Module):
         h3 = F.relu(self.fc3(h2))
         logits = self.fc_out(h3)
 
+        # Live tensors share the compute graph with logits (for optional return).
         activations: dict[str, Tensor] = {
             "act_in": act_in,
             "act_fc1": h1,
@@ -111,7 +120,9 @@ class MLPReasoningNet(nn.Module):
             "act_fc3": h3,
             "act_fc_out": logits,
         }
-        self.last_activations = activations
+        # Detached clones: no graph retention after backward; act_in snapshot is
+        # stable if the caller's batch buffer is later mutated in-place.
+        self.last_activations = {k: v.detach().clone() for k, v in activations.items()}
 
         if return_activations:
             return logits, activations
