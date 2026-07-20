@@ -328,6 +328,46 @@ def test_gevb_seed_deterministic() -> None:
         assert not torch.equal(a.B[layer], c.B[layer])
 
 
+def test_gevb_persist_seed_mismatch_raises(tmp_path: Path) -> None:
+    """Loading B from a path written with a different gevb_feedback_seed must fail."""
+    path = tmp_path / "gevb_B_seed0.pt"
+    shapes = {
+        "fc1": (8, 12),
+        "fc2": (6, 8),
+        "fc3": (4, 6),
+        "fc_out": (5, 4),
+    }
+    GEVBVectorEligibility(
+        experiment_seed=0,
+        gevb_feedback_seed=0,
+        num_classes=5,
+        layer_shapes=shapes,
+        persist_path=path,
+    )
+    assert path.is_file()
+    with pytest.raises(RuntimeError, match="seed mismatch"):
+        GEVBVectorEligibility(
+            experiment_seed=0,
+            gevb_feedback_seed=999,
+            num_classes=5,
+            layer_shapes=shapes,
+            persist_path=path,
+        )
+
+
+def test_layer_shapes_keyset_change_raises() -> None:
+    """Partial then full layer_shapes after allocation raises ConfigError."""
+    model = _tiny_model()
+    x, y = _batch()
+    acts, packet, shapes = _forward_packet(model, x, y)
+    partial = {"fc1": shapes["fc1"]}
+
+    sig = ActivationMagnitude(decay=DECAY)
+    sig.update(acts, partial, packet, step=0)
+    with pytest.raises(ConfigError, match="layer_shapes keys changed"):
+        sig.update(acts, shapes, packet, step=1)
+
+
 # ---------------------------------------------------------------------------
 # Per-sample residual energy guard
 # ---------------------------------------------------------------------------
@@ -344,34 +384,40 @@ def test_require_per_sample_rejects_numel1_for_batch() -> None:
 
 
 def test_eligibility_rejects_batch_scalar_modulator() -> None:
-    """Patch packet-like object: scalar e_s with per-sample a must raise."""
+    """Scalar / length-1 e_s with per-sample a must raise ConfigError on update."""
     model = _tiny_model()
     x, y = _batch(B=6)
     acts, packet, shapes = _forward_packet(model, x, y)
 
-    # Build a packet with scalar e_s (invalid)
-    bad = BroadcastPacket(
+    bad_0dim = BroadcastPacket(
         e_scalar_ce=packet.e_scalar_ce,
         e_vec_mean=packet.e_vec_mean,
-        e_s_per_sample=torch.tensor(0.5),  # scalar 0-dim after squeeze path
+        e_s_per_sample=torch.tensor(0.5),  # 0-dim scalar
         r_per_sample=packet.r_per_sample,
         step=packet.step,
     )
-    # 0-dim via mean
-    bad_scalar = BroadcastPacket(
+    bad_mean = BroadcastPacket(
         e_scalar_ce=packet.e_scalar_ce,
         e_vec_mean=packet.e_vec_mean,
-        e_s_per_sample=packet.e_s_per_sample.mean(),  # 0-dim
+        e_s_per_sample=packet.e_s_per_sample.mean(),  # 0-dim via mean
+        r_per_sample=packet.r_per_sample,
+        step=packet.step,
+    )
+    bad_len1 = BroadcastPacket(
+        e_scalar_ce=packet.e_scalar_ce,
+        e_vec_mean=packet.e_vec_mean,
+        e_s_per_sample=torch.tensor([0.5]),  # [1] vs B>1
         r_per_sample=packet.r_per_sample,
         step=packet.step,
     )
 
-    for sig in (
-        HebbianResidualEnergyCorr(decay=DECAY),
-        ThreeFactorScalarEligibility(decay=DECAY),
-    ):
-        with pytest.raises(ConfigError):
-            sig.update(acts, shapes, bad_scalar, step=0)
+    for bad_packet in (bad_0dim, bad_mean, bad_len1):
+        for sig in (
+            HebbianResidualEnergyCorr(decay=DECAY),
+            ThreeFactorScalarEligibility(decay=DECAY),
+        ):
+            with pytest.raises(ConfigError):
+                sig.update(acts, shapes, bad_packet, step=0)
 
 
 def test_eligibility_formula_uses_per_sample_e() -> None:

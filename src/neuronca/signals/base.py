@@ -212,6 +212,15 @@ class _BaseSignal:
         dtype: torch.dtype,
     ) -> None:
         if self._allocated:
+            # Fixed-topology contract: layer key set must match first allocation.
+            allocated = set(self._neuron.keys())
+            requested = set(layer_shapes.keys())
+            if allocated != requested:
+                raise ConfigError(
+                    f"{self.name}: layer_shapes keys changed after allocation; "
+                    f"allocated={sorted(allocated)} requested={sorted(requested)}. "
+                    f"Pass the full fixed layer map on every update (or call reset())."
+                )
             return
         for layer, (n_out, n_in) in layer_shapes.items():
             self._neuron[layer] = torch.zeros(n_out, device=device, dtype=dtype)

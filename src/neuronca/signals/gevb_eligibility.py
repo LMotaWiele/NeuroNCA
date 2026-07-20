@@ -29,6 +29,7 @@ from torch import Tensor
 from neuronca.broadcast.error import BroadcastPacket
 from neuronca.signals.base import (
     DEFAULT_DECAY,
+    ConfigError,
     _BaseSignal,
     ema_update,
     get_pre_post,
@@ -104,6 +105,40 @@ class GEVBVectorEligibility(_BaseSignal):
         for layer, (n_out, n_in) in layer_shapes.items():
             self._T_edge[layer] = torch.zeros(n_out, n_in, device=device, dtype=dtype)
 
+    def _validate_B_against_shapes(
+        self,
+        layer_shapes: Mapping[str, tuple[int, int]],
+        *,
+        num_classes: int,
+    ) -> None:
+        """Ensure in-memory B keys/shapes match the requested layer map."""
+        b_keys = set(self.B.keys())
+        req_keys = set(layer_shapes.keys())
+        if b_keys != req_keys:
+            raise ConfigError(
+                f"eligibility_gevb_rf: B_ell keys {sorted(b_keys)} != "
+                f"layer_shapes keys {sorted(req_keys)}"
+            )
+        for layer, (n_out, _n_in) in layer_shapes.items():
+            expected = (n_out, num_classes)
+            if self.B[layer].shape != expected:
+                raise ConfigError(
+                    f"eligibility_gevb_rf: B[{layer}] shape {tuple(self.B[layer].shape)} "
+                    f"!= expected {expected}"
+                )
+
+    def _persist_seed_mismatch_message(self, payload: dict) -> str:
+        stored_rng = payload.get("rng_seed")
+        stored_exp = payload.get("experiment_seed")
+        stored_fb = payload.get("gevb_feedback_seed")
+        return (
+            f"GEVB persist file {self.persist_path} seed mismatch: "
+            f"file (experiment_seed={stored_exp}, gevb_feedback_seed={stored_fb}, "
+            f"rng_seed={stored_rng}) vs instance (experiment_seed={self.experiment_seed}, "
+            f"gevb_feedback_seed={self.gevb_feedback_seed}, rng_seed={self.rng_seed}). "
+            f"Use a matching path or delete the stale file."
+        )
+
     def _build_or_load_B(
         self,
         layer_shapes: Mapping[str, tuple[int, int]],
@@ -112,6 +147,7 @@ class GEVBVectorEligibility(_BaseSignal):
         device: torch.device,
     ) -> None:
         if self._B_ready:
+            self._validate_B_against_shapes(layer_shapes, num_classes=num_classes)
             # Move existing B to device if needed
             for k, mat in list(self.B.items()):
                 if mat.device != device:
@@ -121,22 +157,27 @@ class GEVBVectorEligibility(_BaseSignal):
         loaded = False
         if self.persist_path is not None and self.persist_path.is_file():
             payload = torch.load(self.persist_path, map_location="cpu", weights_only=True)
-            B_dict = payload["B"] if isinstance(payload, dict) and "B" in payload else payload
+            if not isinstance(payload, dict) or "B" not in payload:
+                raise RuntimeError(
+                    f"persist file {self.persist_path} missing 'B' dict payload"
+                )
+            # Reject silent reuse when feedback/experiment seeds differ
+            stored_rng = payload.get("rng_seed")
+            stored_exp = payload.get("experiment_seed")
+            stored_fb = payload.get("gevb_feedback_seed")
+            if stored_rng is not None and int(stored_rng) != int(self.rng_seed):
+                raise RuntimeError(self._persist_seed_mismatch_message(payload))
+            if stored_exp is not None and int(stored_exp) != int(self.experiment_seed):
+                raise RuntimeError(self._persist_seed_mismatch_message(payload))
+            if stored_fb is not None and int(stored_fb) != int(self.gevb_feedback_seed):
+                raise RuntimeError(self._persist_seed_mismatch_message(payload))
+
+            B_dict = payload["B"]
             self.B = {
                 name: t.detach().to(device=device, dtype=torch.float32).requires_grad_(False)
                 for name, t in B_dict.items()
             }
-            # Validate shapes
-            for layer, (n_out, _n_in) in layer_shapes.items():
-                if layer not in self.B:
-                    raise RuntimeError(
-                        f"persist file {self.persist_path} missing B for layer {layer}"
-                    )
-                if self.B[layer].shape != (n_out, num_classes):
-                    raise RuntimeError(
-                        f"persist B[{layer}] shape {tuple(self.B[layer].shape)} "
-                        f"!= expected {(n_out, num_classes)}"
-                    )
+            self._validate_B_against_shapes(layer_shapes, num_classes=num_classes)
             loaded = True
 
         if not loaded:
