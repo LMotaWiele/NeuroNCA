@@ -693,25 +693,45 @@ def run_task_shift(
             }
         )
 
-        # Coarse full-GT snapshots at mid_b / late_b (same epoch when b=1)
-        tags: list[str] = []
+        # B epoch-end snapshots (design):
+        # - coarse mid_b / late_b → full GT (GT-1 + GT-2)
+        # - all other B epoch ends → GT-1 only (tag b_epoch_{k})
+        coarse_tags: list[str] = []
         if mid_b_epoch is not None and epoch_1based == mid_b_epoch:
-            tags.append("mid_b")
+            coarse_tags.append("mid_b")
         if late_b_epoch is not None and epoch_1based == late_b_epoch:
-            tags.append("late_b")
-        seen_tag: set[str] = set()
-        for tag in tags:
-            if tag in seen_tag:
-                continue
-            seen_tag.add(tag)
+            coarse_tags.append("late_b")
+
+        if coarse_tags:
+            # One full-GT compute; emit a correlation row set per coarse tag
+            # (mid_b == late_b when epochs_b == 1).
             snap = trainer.snapshot(
                 gt_full,
                 probe_loader,
                 edge_sample_mask=edge_mask,
                 check_isolation=False,
             )
+            seen_tag: set[str] = set()
+            for tag in coarse_tags:
+                if tag in seen_tag:
+                    continue
+                seen_tag.add(tag)
+                _record_snapshot(
+                    snap, tag, epoch=epoch_1based, steps_after_switch=b_steps
+                )
+        else:
+            # Non-coarse B epoch end: GT-1 only
+            snap = trainer.snapshot(
+                gt_lag,
+                probe_loader,
+                edge_sample_mask=edge_mask,
+                check_isolation=False,
+            )
             _record_snapshot(
-                snap, tag, epoch=epoch_1based, steps_after_switch=b_steps
+                snap,
+                f"b_epoch_{epoch_1based}",
+                epoch=epoch_1based,
+                steps_after_switch=b_steps,
             )
 
     # ------------------------------------------------------------------
@@ -855,7 +875,7 @@ def run_task_shift(
             "first_b_step",
             "lag_t0",
             "dense_lag",
-            "mid_b/late_b",
+            "b_epoch_end_gt1_or_coarse_full",
         ],
     }
 

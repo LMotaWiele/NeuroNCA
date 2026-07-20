@@ -213,7 +213,14 @@ def task_shift_schedule(
     lag_stride: int = 25,
     include_a_early_mid: bool = True,
 ) -> EvalSchedule:
-    """Full task-shift evaluation schedule (A phase + switch + lag + B coarse)."""
+    """Full task-shift evaluation schedule (A phase + switch + lag + B phase).
+
+    B-phase snapshots (design § Other B-phase snapshots):
+    - Dense lag: GT-1 every ``lag_stride`` for ``lag_window_steps``
+    - Coarse: ``mid_b`` / ``late_b`` with full GT (GT-1 + GT-2)
+    - Each B epoch end: GT-1 only, **unless** that epoch is also a coarse tag
+      (then full GT via ``mid_b`` / ``late_b`` only — no duplicate GT-1 tag)
+    """
     snaps: list[SnapshotSpec] = []
 
     if include_a_early_mid and epochs_a >= 1:
@@ -240,9 +247,12 @@ def task_shift_schedule(
     snaps.extend(switch_snapshot_tags())
     snaps.extend(lag_snapshot_tags(lag_window_steps, lag_stride))
 
-    # Coarse B-phase: mid-B epoch, late-B
+    # B-phase: coarse mid/late (full GT) + non-coarse epoch ends (GT-1 only)
     if epochs_b >= 1:
         mid_b = max(1, epochs_b // 2)
+        late_b = epochs_b
+        coarse_epochs = {mid_b, late_b}
+
         snaps.append(
             SnapshotSpec(
                 tag="mid_b",
@@ -257,12 +267,29 @@ def task_shift_schedule(
             SnapshotSpec(
                 tag="late_b",
                 kind="coarse",
-                epoch=epochs_b,
+                epoch=late_b,
                 gt_suite="full",
                 active_transform="B",
                 optimizer=True,
             )
         )
+
+        # Design: "Task B epoch ends | each epoch end of B | GT-1;
+        # full if also coarse tag". Coarse epochs are covered by mid_b/late_b
+        # (full suite); emit GT-1-only tags for the remaining epoch ends.
+        for ep in range(1, epochs_b + 1):
+            if ep in coarse_epochs:
+                continue
+            snaps.append(
+                SnapshotSpec(
+                    tag=f"b_epoch_{ep}",
+                    kind="epoch_end",
+                    epoch=ep,
+                    gt_suite="gt1",
+                    active_transform="B",
+                    optimizer=True,
+                )
+            )
 
     return EvalSchedule(condition="task_shift", snapshots=snaps)
 

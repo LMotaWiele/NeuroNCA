@@ -16,6 +16,7 @@ from neuronca.data.tasks import (
     make_identity_transform,
     make_label_permutation_transform,
 )
+from neuronca.eval.schedule import task_shift_schedule
 from neuronca.experiments.task_shift import (
     _gt_shift_disagreement,
     _lag_target_b_steps,
@@ -79,6 +80,38 @@ def test_lag_target_b_steps_mapping():
     assert _lag_target_b_steps(0) == 1
     assert _lag_target_b_steps(25) == 25
     assert _lag_target_b_steps(500) == 500
+
+
+def test_task_shift_schedule_b_epoch_ends_gt1():
+    """Design: each non-coarse B epoch end is GT-1; mid_b/late_b are full.
+
+    epochs_b=4 → mid_b=2, late_b=4; b_epoch_1 and b_epoch_3 are GT-1 epoch_end.
+    """
+    sched = task_shift_schedule(
+        epochs_a=1, epochs_b=4, lag_window_steps=50, lag_stride=25
+    )
+    by_tag = {s.tag: s for s in sched.snapshots}
+    assert by_tag["mid_b"].gt_suite == "full"
+    assert by_tag["mid_b"].epoch == 2
+    assert by_tag["late_b"].gt_suite == "full"
+    assert by_tag["late_b"].epoch == 4
+    assert "b_epoch_1" in by_tag
+    assert by_tag["b_epoch_1"].kind == "epoch_end"
+    assert by_tag["b_epoch_1"].gt_suite == "gt1"
+    assert by_tag["b_epoch_1"].epoch == 1
+    assert "b_epoch_3" in by_tag
+    assert by_tag["b_epoch_3"].gt_suite == "gt1"
+    # Coarse epochs must not also get b_epoch_* tags
+    assert "b_epoch_2" not in by_tag
+    assert "b_epoch_4" not in by_tag
+
+
+def test_task_shift_schedule_epochs_b1_no_gt1_epoch_ends():
+    """epochs_b=1: mid_b==late_b==1; no non-coarse b_epoch_* tags."""
+    sched = task_shift_schedule(epochs_a=1, epochs_b=1)
+    tags = [s.tag for s in sched.snapshots]
+    assert "mid_b" in tags and "late_b" in tags
+    assert not any(t.startswith("b_epoch_") for t in tags)
 
 
 def test_switch_sequence_probe_labels_differ_frozen_weights(tmp_path: Path):
@@ -235,9 +268,17 @@ def test_run_task_shift_smoke_artifacts(tmp_path: Path, smoke_config: dict):
     ):
         assert col in lag_cols, f"missing {col} in time_lag.csv"
 
+    # Dense lag is GT-1 only
+    lag_gts = {r["gt_measure"] for r in lag_rows}
+    assert lag_gts == {"grad_abs"}
+
     # t=0 present
     steps = {int(float(r["steps_after_switch"])) for r in lag_rows}
     assert 0 in steps
+
+    # metrics_train.csv written
+    metrics_path = run_dir / "metrics_train.csv"
+    assert metrics_path.is_file()
 
     loaded = json.loads(summary_path.read_text(encoding="utf-8"))
     assert loaded["switch_sequence"][0] == "late_a"
@@ -293,3 +334,56 @@ def test_switch_sequence_order_in_summary(tmp_path: Path, smoke_config: dict):
     late_rec = next(s for s in summary["snapshots"] if s["tag"] == "late_a")
     b0_rec = next(s for s in summary["snapshots"] if s["tag"] == "switch_b0")
     assert late_rec["step"] == b0_rec["step"]
+
+
+def test_b_epoch_end_gt1_for_non_coarse_epochs(tmp_path: Path):
+    """Non-coarse B epoch ends use GT-1 only; coarse mid_b/late_b use full.
+
+    epochs_b=3 → mid_b=1 (full), b_epoch_2 (GT-1), late_b=3 (full).
+    Full suite includes ablation_relu; lag/epoch-end GT-1 is grad_abs only.
+    """
+    cfg = _tiny_task_shift_cfg()
+    train = dict(cfg.get("train") or {})
+    train["epochs_a"] = 1
+    train["epochs_b"] = 3
+    train["max_steps_per_epoch"] = 2
+    cfg["train"] = train
+    # Keep lag tiny so lag does not dominate; still GT-1 only on lag tags.
+    eval_cfg = dict(cfg.get("eval") or {})
+    eval_cfg["lag_window_steps"] = 2
+    eval_cfg["lag_stride"] = 1
+    eval_cfg["coarse_gt_measures"] = ["grad_abs", "ablation_relu"]
+    eval_cfg["lag_gt_measures"] = ["grad_abs"]
+    cfg["eval"] = eval_cfg
+    # Neuron ablation only (skip edge sample) so full suite still includes ablation.
+    gt = dict(cfg.get("gt") or {})
+    gt["edge_ablation_sample"] = 0
+    cfg["gt"] = gt
+
+    summary = run_task_shift(cfg, tmp_path / "phase0", seed=0, smoke=False)
+    snaps = {s["tag"]: s for s in summary["snapshots"]}
+
+    assert "mid_b" in snaps
+    assert "late_b" in snaps
+    assert "b_epoch_2" in snaps
+    # mid_b is epoch 1, late_b is epoch 3 — no b_epoch_1 / b_epoch_3
+    assert "b_epoch_1" not in snaps
+    assert "b_epoch_3" not in snaps
+
+    # Coarse: full suite; non-coarse epoch end + lag: GT-1 only
+    assert "grad_abs" in snaps["mid_b"]["gt_measures"]
+    assert "ablation_relu" in snaps["mid_b"]["gt_measures"]
+    assert "grad_abs" in snaps["late_b"]["gt_measures"]
+    assert "ablation_relu" in snaps["late_b"]["gt_measures"]
+    assert snaps["b_epoch_2"]["gt_measures"] == ["grad_abs"]
+    assert snaps["b_epoch_2"]["epoch"] == 2
+    if "lag_t0" in snaps:
+        assert snaps["lag_t0"]["gt_measures"] == ["grad_abs"]
+
+    # metrics_train.csv present
+    metrics_path = Path(summary["artifacts"]["metrics_train_csv"])
+    assert metrics_path.is_file()
+    with metrics_path.open(encoding="utf-8", newline="") as f:
+        mrows = list(csv.DictReader(f))
+    phases = {r.get("phase") for r in mrows}
+    assert "A" in phases and "B" in phases
