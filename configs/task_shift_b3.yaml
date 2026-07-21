@@ -1,0 +1,21 @@
+# B3 contingency: pixel-permutation task shift (input distribution changes).
+# Merge on top of default.yaml. Same thresholds, same signals — new experiment_id
+# only (via separate results root). Do not retune bars after launch.
+#
+# Design rationale: B1 only remaps labels; activation magnitude can look
+# artificially stable. B3 (permuted MNIST) stresses functional relevance of
+# units when the network must recompute from scrambled inputs.
+
+experiment:
+  conditions: [stationary, task_shift]
+  seeds: [0, 1, 2]
+  output_dir: results/phase0_b3_pixel_perm
+
+train:
+  epochs: 20
+  epochs_a: 15
+  epochs_b: 15
+
+tasks:
+  shift_type: pixel_permutation
+  permutation_seed: 123
