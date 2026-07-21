@@ -176,6 +176,7 @@ def _build_signals(
                 "layer_shapes": layer_shapes,
                 "persist_path": default_gevb_persist_path(seed, meta_dir),
                 "init": str(gevb_cfg.get("init", "gaussian_scaled")),
+                "init_scale": float(gevb_cfg.get("init_scale", 1.0)),
             }
         signals.append(build_signal(name, decay=decay, **kwargs))
     return signals

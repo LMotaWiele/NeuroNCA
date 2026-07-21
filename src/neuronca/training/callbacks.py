@@ -152,6 +152,68 @@ def assert_traces_bitwise_equal(
 
 
 # ---------------------------------------------------------------------------
+# Training RNG isolation (GT must not advance the train-stream RNG)
+# ---------------------------------------------------------------------------
+
+
+class TrainingRNGIsolationError(RuntimeError):
+    """Raised when GT/snapshot leaves torch RNG state different from pre-GT."""
+
+
+def capture_torch_rng_state() -> dict[str, Tensor | list[Tensor] | None]:
+    """Snapshot torch CPU (+ CUDA if present) RNG state for later restore."""
+    state: dict[str, Tensor | list[Tensor] | None] = {
+        "cpu": torch.get_rng_state().cpu().clone(),
+    }
+    if torch.cuda.is_available():
+        # Device-local + all-device copies for multi-GPU safety.
+        state["cuda"] = torch.cuda.get_rng_state().cpu().clone()
+        state["cuda_all"] = [s.cpu().clone() for s in torch.cuda.get_rng_state_all()]
+    else:
+        state["cuda"] = None
+        state["cuda_all"] = None
+    return state
+
+
+def restore_torch_rng_state(state: Mapping[str, Any]) -> None:
+    """Restore torch RNG from :func:`capture_torch_rng_state`."""
+    cpu = state["cpu"]
+    if not isinstance(cpu, Tensor):
+        raise TypeError(f"expected Tensor cpu RNG state; got {type(cpu)!r}")
+    torch.set_rng_state(cpu)
+    if torch.cuda.is_available() and state.get("cuda_all") is not None:
+        torch.cuda.set_rng_state_all(list(state["cuda_all"]))
+    elif torch.cuda.is_available() and state.get("cuda") is not None:
+        torch.cuda.set_rng_state(state["cuda"])
+
+
+def assert_torch_rng_state_equal(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    *,
+    msg: str = "torch RNG state changed across GT/snapshot (training RNG isolation violated)",
+) -> None:
+    """Raise :class:`TrainingRNGIsolationError` unless CPU (+ CUDA) RNG match."""
+    b_cpu, a_cpu = before.get("cpu"), after.get("cpu")
+    if not isinstance(b_cpu, Tensor) or not isinstance(a_cpu, Tensor):
+        raise TrainingRNGIsolationError(f"{msg}: missing cpu RNG tensors")
+    if not torch.equal(b_cpu, a_cpu):
+        raise TrainingRNGIsolationError(f"{msg}: cpu RNG state mismatch")
+    if torch.cuda.is_available():
+        b_all, a_all = before.get("cuda_all"), after.get("cuda_all")
+        if b_all is not None and a_all is not None:
+            if len(b_all) != len(a_all) or any(
+                not torch.equal(x, y) for x, y in zip(b_all, a_all)
+            ):
+                raise TrainingRNGIsolationError(f"{msg}: cuda RNG state mismatch")
+        else:
+            b_c, a_c = before.get("cuda"), after.get("cuda")
+            if isinstance(b_c, Tensor) and isinstance(a_c, Tensor):
+                if not torch.equal(b_c, a_c):
+                    raise TrainingRNGIsolationError(f"{msg}: cuda RNG state mismatch")
+
+
+# ---------------------------------------------------------------------------
 # Snapshot result
 # ---------------------------------------------------------------------------
 
@@ -340,23 +402,80 @@ class InstrumentedTrainer:
         *,
         edge_sample_mask: dict[str, Tensor] | None = None,
         criterion: nn.Module | None = None,
+        verify_probe_cache: bool = True,
+        isolate_training_rng: bool = True,
     ) -> dict[str, ImportanceResult]:
         """(2) Run GT suite with signals disabled.
 
         Does not call ``LocalSignal.update``. Uses :meth:`signals_disabled` so
         any accidental instrumented hook is inert during probe forwards.
+
+        Snapshot-scoped probe cache
+        ---------------------------
+        Materializes the probe set once under the current TaskContext version
+        and passes the same :class:`~neuronca.importance.probe_cache.ProbeCache`
+        to every GT measure. The cache is never reused across ``run_gt`` /
+        ``snapshot`` calls. When ``verify_probe_cache`` is True (default),
+        re-materializes from ``probe_loader`` after the suite and asserts
+        bit-equality with the cache (corruption guard).
+
+        Training RNG isolation (always on by default)
+        ---------------------------------------------
+        Captures ``torch.get_rng_state()`` (and CUDA RNG when present) before
+        GT and restores it after, then asserts equality. Closes the class of
+        bugs where GT-internal ``DataLoader`` iterator creation (or any future
+        sampling) advances the global RNG and silently reorders subsequent
+        shuffled training batches. Same "cheap, always-on production guard"
+        posture as signal-trace isolation and probe-cache integrity.
+
+        Pre-patch historical note: frozen B1/B3 primary results under
+        ``results/historical/pre_patch_rng_isolation/`` were collected
+        *without* this bracket. Under that regime, GT probe iteration count
+        (driven by edge-sample size and neuron ablation unit count) advanced
+        the global CPU RNG and thus coupled into post-snapshot train shuffle
+        order. Those archives remain valid for their fixed config; they are
+        not bit-comparable to post-patch runs or to re-runs with a different
+        ``edge_ablation_sample``.
         """
-        crit = criterion if criterion is not None else self.criterion
-        results: dict[str, ImportanceResult] = {}
-        with self.signals_disabled():
-            for gt in gt_measures:
-                results[gt.name] = gt.compute(
-                    self.model,
-                    probe_loader,
-                    crit,
-                    edge_sample_mask=edge_sample_mask,
+        from neuronca.importance.probe_cache import (
+            assert_probe_cache_matches_loader,
+            materialize_probe_cache,
+        )
+
+        rng_before = (
+            capture_torch_rng_state() if isolate_training_rng else None
+        )
+        try:
+            crit = criterion if criterion is not None else self.criterion
+            device = self.device
+            # Fresh cache every call — snapshot-scoped, never run-level.
+            probe_cache = materialize_probe_cache(probe_loader, device=device)
+            results: dict[str, ImportanceResult] = {}
+            with self.signals_disabled():
+                for gt in gt_measures:
+                    results[gt.name] = gt.compute(
+                        self.model,
+                        probe_cache,
+                        crit,
+                        edge_sample_mask=edge_sample_mask,
+                    )
+            if verify_probe_cache:
+                assert_probe_cache_matches_loader(
+                    probe_cache, probe_loader, device=device
                 )
-        return results
+            return results
+        finally:
+            if isolate_training_rng and rng_before is not None:
+                restore_torch_rng_state(rng_before)
+                # Always-on equality guard: restore must have fully succeeded.
+                assert_torch_rng_state_equal(
+                    rng_before,
+                    capture_torch_rng_state(),
+                    msg=(
+                        "torch RNG state not restored after GT/snapshot "
+                        "(training RNG isolation violated)"
+                    ),
+                )
 
     def snapshot(
         self,
@@ -366,15 +485,23 @@ class InstrumentedTrainer:
         edge_sample_mask: dict[str, Tensor] | None = None,
         criterion: nn.Module | None = None,
         check_isolation: bool = False,
+        verify_probe_cache: bool = True,
+        isolate_training_rng: bool = True,
     ) -> SnapshotResult:
         """Full snapshot protocol: freeze → GT (signals off) → resume.
 
         Args:
             gt_measures: GT modules to run (e.g. ``GradientSaliency``).
-            probe_loader: Current-task probe DataLoader.
+            probe_loader: Current-task probe DataLoader (source of truth for
+                materializing the snapshot-scoped probe cache).
             edge_sample_mask: Optional fixed mask for sparse GT-2.
             criterion: Loss for GT; defaults to trainer criterion.
             check_isolation: If True, assert traces bitwise-identical across GT.
+            verify_probe_cache: If True (default), after GT assert the
+                snapshot probe cache still matches a fresh loader pass.
+            isolate_training_rng: If True (default), bracket GT with torch
+                RNG save/restore + equality assert so GT cannot perturb
+                subsequent training shuffle order.
 
         Returns:
             :class:`SnapshotResult` with frozen scores and GT maps.
@@ -387,12 +514,14 @@ class InstrumentedTrainer:
         # (1) freeze/copy local scores under no_grad
         local_scores = self.freeze_local_scores()
 
-        # (2) GT with signals disabled
+        # (2) GT with signals disabled (probe cache + RNG isolation inside run_gt)
         gt_results = self.run_gt(
             gt_measures,
             probe_loader,
             edge_sample_mask=edge_sample_mask,
             criterion=criterion,
+            verify_probe_cache=verify_probe_cache,
+            isolate_training_rng=isolate_training_rng,
         )
 
         # Isolation assert: traces unchanged

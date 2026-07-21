@@ -3,6 +3,11 @@
 Primary recovery (verdict) uses absolute first crossing of threshold 0.60.
 ``rho_rec`` is ρ at the first crossing, or ρ at the window end if none —
 **never** max-in-window. Relative recovery (0.9 * rho_pre_switch) is secondary.
+
+Diagnostic (not a pass/fail gate): ``t_star_sustained`` is the first lag time
+after which ρ stays at/above threshold for **all** subsequent logged points
+through the window end — distinguishing one-shot frozen-weight coincidences
+from recovery that holds.
 """
 
 from __future__ import annotations
@@ -45,6 +50,17 @@ class LagRecoveryResult:
     rho_at_window_end: float
     """ρ at the last lag point (typically t=500)."""
 
+    t_star_sustained: float = float("inf")
+    """First t such that ρ(u) >= threshold for all logged u in [t, max_t], or +inf.
+
+    Diagnostic only — does **not** replace ``t_star_abs`` / ``recovered_abs`` for
+    verdict gates. Catches first-crossing-then-collapse (e.g. activation at t=0
+    with frozen weights) that ``t_star_abs`` marks recovered.
+    """
+
+    recovered_sustained: bool = False
+    """True iff ``t_star_sustained`` is finite."""
+
 
 def first_crossing(
     times: Sequence[float] | np.ndarray,
@@ -74,6 +90,45 @@ def first_crossing(
             if t < best:
                 best = float(t)
     return best
+
+
+def first_sustained_crossing(
+    times: Sequence[float] | np.ndarray,
+    rhos: Sequence[float] | np.ndarray,
+    *,
+    threshold: float = DEFAULT_RECOVERY_THRESHOLD,
+    max_t: float = DEFAULT_LAG_WINDOW_STEPS,
+) -> float:
+    """First t such that ρ stays ≥ threshold for all subsequent lag points.
+
+    Among logged points with finite ``t <= max_t``, ordered by increasing t,
+    return the earliest ``t_i`` for which every ``ρ(t_j)`` with ``j >= i`` is
+    finite and ``>= threshold``. If ρ dips below threshold after an earlier
+    crossing, that earlier time does **not** count.
+
+    Returns +inf if no such sustained segment exists through the window end.
+    """
+    t_arr = np.asarray(times, dtype=np.float64)
+    r_arr = np.asarray(rhos, dtype=np.float64)
+    if t_arr.shape != r_arr.shape:
+        raise ValueError("times and rhos must have the same shape")
+    if t_arr.ndim != 1:
+        raise ValueError("times and rhos must be 1-D")
+
+    mask = np.isfinite(t_arr) & (t_arr <= float(max_t))
+    if not np.any(mask):
+        return float("inf")
+    t_use = t_arr[mask]
+    r_use = r_arr[mask]
+    order = np.argsort(t_use, kind="mergesort")
+    t_sorted = t_use[order]
+    r_sorted = r_use[order]
+    n = int(t_sorted.size)
+    for i in range(n):
+        tail = r_sorted[i:]
+        if np.all(np.isfinite(tail) & (tail >= float(threshold))):
+            return float(t_sorted[i])
+    return float("inf")
 
 
 def rho_at_time(
@@ -212,6 +267,9 @@ def analyze_lag_curve(
         max_t=max_t,
     )
     rho_end = rho_at_window_end(t_arr, r_arr, max_t=max_t)
+    t_star_sustained = first_sustained_crossing(
+        t_arr, r_arr, threshold=threshold, max_t=max_t
+    )
 
     return LagRecoveryResult(
         t_star_abs=float(t_star_abs),
@@ -222,4 +280,6 @@ def analyze_lag_curve(
         recovered_rel=bool(np.isfinite(t_star_rel)),
         rho_pre_switch=float(rho_pre_switch),
         rho_at_window_end=float(rho_end),
+        t_star_sustained=float(t_star_sustained),
+        recovered_sustained=bool(np.isfinite(t_star_sustained)),
     )

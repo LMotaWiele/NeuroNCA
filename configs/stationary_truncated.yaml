@@ -1,0 +1,18 @@
+# Stationary truncated-training check (harder-task variant c).
+#
+# Single-variable change vs primary Phase 0 stationary: fewer epochs so the
+# "late" snapshot is taken while train loss is still meaningfully nonzero
+# (~0.02–0.05 at epoch 6 on seed-0 history), not after near-memorization.
+# Same architecture, MNIST Task A, candidates, GT suite, and thresholds.
+#
+# Schedule with epochs=6: early=epoch 1, mid=epoch 3, late=epoch 6.
+
+experiment:
+  conditions: [stationary]
+  output_dir: results/phase0_truncated_epochs
+
+train:
+  epochs: 6
+
+tasks:
+  shift_type: null

@@ -1,0 +1,32 @@
+# Fixed-topology backprop-only baseline (Phase 0 MLP sizes).
+# For matched final-size baselines, override model.hidden after plastic runs.
+
+seed: 0
+device: auto
+
+model:
+  input_dim: 784
+  hidden: [256, 128, 64]
+  num_classes: 10
+
+train:
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  batch_size: 128
+  epochs: 20
+
+data:
+  root: data/mnist
+  num_workers: 2
+
+experiment:
+  variant: fixed_topology
+  seeds: [0, 1, 2]
+  output_dir: results/phase1a_baseline_fixed_topo
+
+smoke:
+  train:
+    epochs: 1
+    batch_size: 64

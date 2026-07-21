@@ -7,12 +7,15 @@ GT modules may use full gradient / ablation access. They must **never** call
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, Union, runtime_checkable
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
+
+# Live DataLoader or snapshot-scoped ProbeCache (string form avoids import cycle).
+ProbeSource = Union[DataLoader, "ProbeCache"]
 
 
 @dataclass
@@ -43,7 +46,7 @@ class GroundTruthImportance(Protocol):
     def compute(
         self,
         model: nn.Module,
-        probe_loader: DataLoader,
+        probe_loader: ProbeSource,
         criterion: nn.Module,
         *,
         edge_sample_mask: dict[str, Tensor] | None = None,
@@ -84,22 +87,27 @@ def resolve_device(model: nn.Module) -> torch.device:
 @torch.no_grad()
 def mean_probe_loss(
     model: nn.Module,
-    probe_loader: DataLoader,
+    probe_loader: ProbeSource,
     criterion: nn.Module,
     *,
     device: torch.device | None = None,
 ) -> float:
-    """Mean criterion over the full probe loader (eval mode, no grad)."""
+    """Mean criterion over the full probe set (eval mode, no grad).
+
+    ``probe_loader`` may be a :class:`~torch.utils.data.DataLoader` or a
+    snapshot-scoped :class:`~neuronca.importance.probe_cache.ProbeCache`.
+    """
+    # Local import avoids circular dependency at module load.
+    from neuronca.importance.probe_cache import iter_probe_batches
+
     if device is None:
         device = resolve_device(model)
     was_training = model.training
     model.eval()
     total = 0.0
     n = 0
-    for batch in probe_loader:
-        x, y = unpack_batch(batch)
-        x = x.to(device)
-        y = y.to(device)
+    # Loader batches are moved to ``device``; ProbeCache batches already on-device.
+    for x, y in iter_probe_batches(probe_loader, device=device):
         # Flatten integer class-label tensors only (CE); keep float (B, C) for MSE.
         if y.ndim > 1 and not y.is_floating_point():
             y = y.view(-1)

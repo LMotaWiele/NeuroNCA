@@ -1,0 +1,89 @@
+# Phase 1a full stack on Fashion-MNIST — dataset-calibrated homeostatic targets.
+#
+# Same mechanism stack as configs/phase1a_fixed.yaml (gated novelty + gap_imprinted
+# + competitive prune), but **r*_ℓ re-probed on Fashion-MNIST**.
+#
+# Do NOT reuse MNIST target_rates (0.77, 1.02, 1.28) on Fashion. Probe artifact:
+#   results/phase1a_diagnostics/fashion_mnist_calibration/target_rate_probe.json
+#
+# Straddle formula B = −(μ_gap+μ_nongap)/2 is per-unit adaptive (unchanged code);
+# Fashion bias-free operating point was re-measured and SEPARATES_OK at 100%.
+# Growth-fire gate: PASS under these rates (6 ep seed 0).
+#
+# Prior uncalibrated Fashion Pareto (MNIST r* on Fashion data) is INVALID and
+# must not be cited as a mechanism/efficiency finding.
+
+seed: 0
+device: auto
+
+model:
+  input_dim: 784
+  hidden_init: [256, 128, 64]
+  hidden_max: [512, 256, 128]
+  num_classes: 10
+
+train:
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  batch_size: 128
+  epochs: 20
+  epochs_a: 15
+  epochs_b: 15
+
+data:
+  root: data/fashion_mnist
+  dataset: fashion_mnist
+  num_workers: 2
+
+plasticity:
+  threshold_kind: fixed
+  radius: 0.35
+  # Per-layer r*_ℓ from 1-epoch Fashion-MNIST ActivationMagnitude mean EMA.
+  # Locked 2026-07-22 (see fashion_mnist_calibration/).
+  target_rates:
+    h1: 0.71
+    h2: 0.80
+    h3: 0.91
+  tau: 0.5
+  edge_eligibility_mode: neither_contraction
+  newborn_grace_steps: 3
+  newborn_ema_init: layer_target
+  newborn_birth_bias: 0.5
+  newborn_birth_bias_steps: 3
+  newborn_weight_init: gap_imprinted
+  newborn_parent_noise: 0.0
+  newborn_copy_outgoing: true
+  newborn_parent_coord_jitter: 0.05
+  newborn_lr_mult: 1.0
+  neuron_growth_trigger: gated_novelty
+  novelty_k_min: 11
+  novelty_rank_fraction: 1.0
+  mu: 0.999
+  prune_edge_fraction: 0.05
+  prune_neuron_z: -1.0
+  max_new_edges_per_layer: 64
+  max_new_neurons_per_layer: 4
+  seed_edges_per_new_neuron: 4
+  cadence: epoch
+
+tasks:
+  shift_type: label_permutation
+  permutation_seed: 123
+
+experiment:
+  variant: fixed
+  stack: fullstack_fashion_calibrated
+  seeds: [0, 1, 2]
+  output_dir: results/phase1a_fashion
+  conditions: [stationary]
+  record_structure_snapshots: false
+  structure_snapshot_cadence: every_epoch
+
+smoke:
+  train:
+    epochs: 1
+    epochs_a: 1
+    epochs_b: 1
+    batch_size: 64

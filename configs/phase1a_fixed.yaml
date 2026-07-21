@@ -1,0 +1,98 @@
+# Phase 1a OFFICIAL full stack (locked recipe).
+#
+# Bundles every validated piece into one product config for primary comparison
+# against the fixed-topology baseline. Do not retune knobs after the primary
+# multi-seed run (see docs/phase1a_preregistration.md).
+#
+# Locked stack:
+#   • threshold:        fixed (sliding held — B_NO_HELP; no measurable benefit)
+#   • growth trigger:   gated_novelty (novelty ∧ local CE gate ∧ |N|≥k_min=11)
+#   • under-floor:      exclude + log + monitor (no act>r* fallback)
+#   • birth:            gap_imprinted (sep-power edges, open-fan Kaiming scale,
+#                       straddle Parameter bias — implemented in orchestrator)
+#   • prune:            continuous competitive (z-score / fraction)
+#   • grace / cooldown: grace=3 ≥ birth_bias_steps=3; EMA warm-start at r*_ℓ
+#   • r*_ℓ:             per-layer (0.77, 1.02, 1.28); τ=0.5 soft-recommend
+#
+# Prior piece-wise batteries (trigger alone, birth alone, specialization alone)
+# are superseded as product configs by this file. Sliding counterpart retained
+# only as a held historical arm (configs/phase1a_sliding.yaml).
+
+seed: 0
+device: auto
+
+model:
+  input_dim: 784
+  hidden_init: [256, 128, 64]
+  hidden_max: [512, 256, 128]
+  num_classes: 10
+
+train:
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  batch_size: 128
+  epochs: 20
+  epochs_a: 15
+  epochs_b: 15
+
+data:
+  root: data/mnist
+  num_workers: 2
+
+plasticity:
+  threshold_kind: fixed
+  radius: 0.35
+  # Per-layer r*_ℓ from 1-epoch ActivationMagnitude mean EMA (probe). Locked.
+  target_rates:
+    h1: 0.77
+    h2: 1.02
+    h3: 1.28
+  tau: 0.5
+  edge_eligibility_mode: neither_contraction  # keep-strict; standalone edge path inert in 1a window
+  # Grace ≥ bias_steps so judgment never mixes real signal with scaffold bias.
+  newborn_grace_steps: 3
+  newborn_ema_init: layer_target
+  # Scaffold only used for non-gap births / kaiming fallback; gap_imprinted uses
+  # measurement-sized straddle Parameter bias set in the orchestrator.
+  newborn_birth_bias: 0.5
+  newborn_birth_bias_steps: 3
+  # OFFICIAL birth: residual pre-act on CE-excess gap samples (not parent clone).
+  newborn_weight_init: gap_imprinted
+  newborn_parent_noise: 0.0
+  newborn_copy_outgoing: true
+  newborn_parent_coord_jitter: 0.05
+  newborn_lr_mult: 1.0
+  # OFFICIAL trigger: novelty ∧ local CE excess ∧ density floor.
+  neuron_growth_trigger: gated_novelty
+  novelty_k_min: 11
+  novelty_rank_fraction: 1.0
+  mu: 0.999          # unused for fixed; kept for config parity
+  prune_edge_fraction: 0.05
+  prune_neuron_z: -1.0
+  max_new_edges_per_layer: 64
+  max_new_neurons_per_layer: 4
+  seed_edges_per_new_neuron: 4
+  cadence: epoch
+
+tasks:
+  shift_type: label_permutation
+  permutation_seed: 123
+
+experiment:
+  variant: fixed
+  stack: fullstack_locked
+  seeds: [0, 1, 2]
+  output_dir: results/phase1a_fixed
+  conditions: [stationary, task_shift]
+  # Opt-in full-state topology dumps for scripts/visualize_structure.py.
+  record_structure_snapshots: false
+  structure_snapshot_cadence: every_epoch  # every_epoch | early_mid_late | [0, 5, 19]
+
+smoke:
+  train:
+    epochs: 1
+    epochs_a: 1
+    epochs_b: 1
+    batch_size: 64

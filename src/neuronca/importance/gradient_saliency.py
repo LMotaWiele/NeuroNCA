@@ -13,15 +13,15 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.utils.data import DataLoader
 
 from neuronca.importance.base import (
     ImportanceResult,
+    ProbeSource,
     cpu_float,
     iter_linear_layers,
     resolve_device,
-    unpack_batch,
 )
+from neuronca.importance.probe_cache import iter_probe_batches
 
 
 class GradientSaliency:
@@ -39,12 +39,15 @@ class GradientSaliency:
     def compute(
         self,
         model: nn.Module,
-        probe_loader: DataLoader,
+        probe_loader: ProbeSource,
         criterion: nn.Module,
         *,
         edge_sample_mask: dict[str, Tensor] | None = None,
     ) -> ImportanceResult:
         """Accumulate mean |weight grad| over the probe set.
+
+        ``probe_loader`` may be a DataLoader or a snapshot-scoped
+        :class:`~neuronca.importance.probe_cache.ProbeCache`.
 
         ``edge_sample_mask`` is accepted for protocol compatibility and ignored
         (GT-1 is always dense). Does not call any local-signal update path.
@@ -68,10 +71,7 @@ class GradientSaliency:
             weight_ref[name] = w.detach()
 
         total_n = 0
-        for batch in probe_loader:
-            x, y = unpack_batch(batch)
-            x = x.to(device)
-            y = y.to(device)
+        for x, y in iter_probe_batches(probe_loader, device=device):
             # Flatten integer class labels only; keep float (B, C) for MSE-style criteria.
             if y.ndim > 1 and not y.is_floating_point():
                 y = y.view(-1)
@@ -125,7 +125,7 @@ class GradientSaliency:
 
 def compute_grad_abs(
     model: nn.Module,
-    probe_loader: DataLoader,
+    probe_loader: ProbeSource,
     criterion: nn.Module,
     *,
     grad_batch_size: int | None = None,

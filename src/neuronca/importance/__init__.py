@@ -20,11 +20,21 @@ from neuronca.importance.ablation import (
 from neuronca.importance.base import (
     GroundTruthImportance,
     ImportanceResult,
+    ProbeSource,
     iter_linear_layers,
     mean_probe_loss,
 )
 from neuronca.importance.fisher import FisherImportance, compute_fisher
 from neuronca.importance.gradient_saliency import GradientSaliency, compute_grad_abs
+from neuronca.importance.probe_cache import (
+    ProbeCache,
+    ProbeCacheIntegrityError,
+    ProbeCacheVersionError,
+    assert_probe_cache_matches_loader,
+    extract_task_context,
+    iter_probe_batches,
+    materialize_probe_cache,
+)
 
 __all__ = [
     "AblationImportance",
@@ -35,14 +45,22 @@ __all__ = [
     "GradientSaliency",
     "GroundTruthImportance",
     "ImportanceResult",
+    "ProbeCache",
+    "ProbeCacheIntegrityError",
+    "ProbeCacheVersionError",
+    "ProbeSource",
+    "assert_probe_cache_matches_loader",
     "build_edge_ablation_mask",
     "compute_fisher",
     "compute_grad_abs",
     "default_edge_mask_path",
     "edge_mask_rng_seed",
+    "extract_task_context",
     "iter_linear_layers",
+    "iter_probe_batches",
     "layer_id_hash",
     "load_edge_ablation_mask",
+    "materialize_probe_cache",
     "mean_probe_loss",
     "save_edge_ablation_mask",
 ]

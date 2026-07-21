@@ -182,6 +182,9 @@ def compute_recovery_for_seed(
         "recovered_rel": result.recovered_rel,
         "rho_pre_switch": result.rho_pre_switch,
         "rho_at_window_end": result.rho_at_window_end,
+        # Diagnostic only — not used by recovered_check / decide_verdict.
+        "t_star_sustained": result.t_star_sustained,
+        "recovered_sustained": result.recovered_sustained,
     }
 
 

@@ -5,7 +5,8 @@ Name: ``eligibility_gevb_rf``.
 Owns fixed feedback matrices ``B_ell`` (not the broadcast encoder):
 
     rng_seed = hash(experiment.seed, gevb_feedback.seed, "gevb_B")
-    B_ell ~ N(0, 1/C) shaped [n_out, C]  (gaussian_scaled, not trained)
+    B_ell ~ N(0, (init_scale / sqrt(C))^2) shaped [n_out, C]
+    (gaussian_scaled, not trained; default init_scale=1 → std = 1/sqrt(C))
 
     δ_j^{(b)} = (B_ell r_b)_j
     δ_ij = mean_b a_i δ_j
@@ -65,14 +66,18 @@ class GEVBVectorEligibility(_BaseSignal):
         layer_shapes: dict[str, tuple[int, int]] | None = None,
         persist_path: str | Path | None = None,
         init: str = "gaussian_scaled",
+        init_scale: float = 1.0,
         device: torch.device | str | None = None,
     ) -> None:
         super().__init__(decay=decay)
         if init != "gaussian_scaled":
             raise ValueError(f"unsupported gevb init {init!r}; only 'gaussian_scaled'")
+        if float(init_scale) <= 0:
+            raise ValueError(f"init_scale must be > 0; got {init_scale!r}")
         self.experiment_seed = int(experiment_seed)
         self.gevb_feedback_seed = int(gevb_feedback_seed)
         self.rng_seed = gevb_rng_seed(self.experiment_seed, self.gevb_feedback_seed)
+        self.init_scale = float(init_scale)
         self._num_classes = num_classes
         self._init_layer_shapes = dict(layer_shapes) if layer_shapes is not None else None
         self.persist_path = Path(persist_path) if persist_path is not None else None
@@ -171,6 +176,12 @@ class GEVBVectorEligibility(_BaseSignal):
                 raise RuntimeError(self._persist_seed_mismatch_message(payload))
             if stored_fb is not None and int(stored_fb) != int(self.gevb_feedback_seed):
                 raise RuntimeError(self._persist_seed_mismatch_message(payload))
+            stored_scale = payload.get("init_scale")
+            if stored_scale is not None and abs(float(stored_scale) - float(self.init_scale)) > 1e-12:
+                raise RuntimeError(
+                    f"persist file {self.persist_path} init_scale={stored_scale} != "
+                    f"requested {self.init_scale}"
+                )
 
             B_dict = payload["B"]
             self.B = {
@@ -181,7 +192,8 @@ class GEVBVectorEligibility(_BaseSignal):
             loaded = True
 
         if not loaded:
-            std = 1.0 / (float(num_classes) ** 0.5)
+            # Default gaussian_scaled: std = 1/sqrt(C); init_scale multiplies that.
+            std = (1.0 / (float(num_classes) ** 0.5)) * float(self.init_scale)
             gen = torch.Generator(device="cpu")
             gen.manual_seed(self.rng_seed)
             self.B = {}
@@ -202,6 +214,7 @@ class GEVBVectorEligibility(_BaseSignal):
                         "gevb_feedback_seed": self.gevb_feedback_seed,
                         "rng_seed": self.rng_seed,
                         "num_classes": num_classes,
+                        "init_scale": float(self.init_scale),
                     },
                     self.persist_path,
                 )

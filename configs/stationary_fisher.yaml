@@ -1,0 +1,15 @@
+# Stationary-only Fisher ground-truth diagnostic (Phase 0 item 4).
+# Same architecture/candidates/seeds; enables gt.fisher. No new pass/fail gate.
+
+experiment:
+  conditions: [stationary]
+  output_dir: results/phase0_fisher_stationary
+
+train:
+  epochs: 20
+
+gt:
+  fisher: true
+
+tasks:
+  shift_type: null

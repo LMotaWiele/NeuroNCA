@@ -22,6 +22,7 @@ from neuronca.eval.time_lag import (
     analyze_lag_curve,
     compute_rho_rec,
     first_crossing,
+    first_sustained_crossing,
 )
 from neuronca.eval.gevb_alignment_verdict import (
     ALIGNMENT_CONVERGED,
@@ -68,6 +69,7 @@ __all__ = [
     "analyze_lag_curve",
     "compute_rho_rec",
     "first_crossing",
+    "first_sustained_crossing",
     "SeedLagCurve",
     "VerdictResult",
     "VerdictThresholds",

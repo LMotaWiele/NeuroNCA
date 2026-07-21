@@ -10,6 +10,22 @@ Signed ΔL is logged under extras key ``ablation_signed`` as nested maps
 Neuron ablation covers hidden posts (default ``fc1,fc2,fc3``). Connection
 ablation uses a **fixed** per-seed edge mask (default 512 edges/layer,
 stratified by |W| bins) so lag / multi-snapshot series stay comparable.
+
+Historical note (pre training-RNG isolation)
+--------------------------------------------
+Before ``InstrumentedTrainer.run_gt`` began bracketing GT with
+``torch.get_rng_state()`` save/restore, each probe ``DataLoader`` iterator
+created inside per-unit ablation advanced the **global** CPU RNG. That meant
+``edge_ablation_sample`` (and neuron-unit count) was **coupled to subsequent
+training shuffle order**: changing the sample size changed how many times the
+probe loader was re-iterated, which shifted the train-stream RNG and produced
+a different multi-epoch trajectory — even with identical seeds and edge masks.
+
+Frozen Phase 0 B1/B3 primary runs were collected under that pre-patch regime
+(leakage constant within each experiment). Do **not** expect bit-reproduction
+of those numbers with a different ``edge_ablation_sample`` or with post-patch
+code that restores RNG after GT. See
+``results/historical/pre_patch_rng_isolation/README.md``.
 """
 
 from __future__ import annotations
@@ -21,10 +37,10 @@ from typing import Any, Iterable
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.utils.data import DataLoader
 
 from neuronca.importance.base import (
     ImportanceResult,
+    ProbeSource,
     cpu_float,
     iter_linear_layers,
     mean_probe_loss,
@@ -231,12 +247,16 @@ class AblationImportance:
     def compute(
         self,
         model: nn.Module,
-        probe_loader: DataLoader,
+        probe_loader: ProbeSource,
         criterion: nn.Module,
         *,
         edge_sample_mask: dict[str, Tensor] | None = None,
     ) -> ImportanceResult:
         """Neuron + (optional) edge ablation on the probe set.
+
+        ``probe_loader`` may be a DataLoader or a snapshot-scoped
+        :class:`~neuronca.importance.probe_cache.ProbeCache` (preferred for
+        production snapshots so the transform pipeline runs once).
 
         Does not call any local-signal update path. Restores weights/hooks
         after each unit ablation so the model is left unchanged.
@@ -343,7 +363,7 @@ class AblationImportance:
     def _ablate_neurons(
         self,
         model: nn.Module,
-        probe_loader: DataLoader,
+        probe_loader: ProbeSource,
         criterion: nn.Module,
         l_base: float,
         device: torch.device,
@@ -382,7 +402,7 @@ class AblationImportance:
     def _ablate_edges(
         self,
         model: nn.Module,
-        probe_loader: DataLoader,
+        probe_loader: ProbeSource,
         criterion: nn.Module,
         l_base: float,
         device: torch.device,

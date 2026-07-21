@@ -1,0 +1,19 @@
+# Phase 0 B2 digit-split shift (genuine class addition / obsolescence).
+# Task A: digits 0–4 (5-way). Task B: digits 5–9 remapped to 0–4.
+# Same candidates, GT suite, seeds, and frozen thresholds as B1/B3.
+# Post-patch path (probe cache + training RNG isolation).
+
+experiment:
+  conditions: [task_shift]
+  output_dir: results/phase0_digit_split
+
+train:
+  epochs_a: 15
+  epochs_b: 15
+
+# Head size is forced to 5 inside the digit_split runner path.
+model:
+  num_classes: 5
+
+tasks:
+  shift_type: digit_split

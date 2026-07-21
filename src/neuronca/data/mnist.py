@@ -14,7 +14,11 @@ from neuronca.data.tasks import TaskContext
 
 MNIST_MEAN = 0.1307
 MNIST_STD = 0.3081
+# Fashion-MNIST standard channel-wise stats (ToTensor scale).
+FASHION_MEAN = 0.2860
+FASHION_STD = 0.3530
 DEFAULT_DATA_ROOT = Path("data/mnist")
+DEFAULT_FASHION_ROOT = Path("data/fashion_mnist")
 DEFAULT_PROBE_SIZE = 1024
 DEFAULT_IMAGE_SIZE = 28 * 28
 
@@ -45,12 +49,20 @@ class MNISTLoaderBundle(TypedDict):
     task_context: TaskContext
 
 
-def default_image_transform() -> transforms.Compose:
-    """Normalize MNIST with the standard mean/std."""
+def default_image_transform(
+    *,
+    dataset: str = "mnist",
+) -> transforms.Compose:
+    """Normalize grayscale 28×28 digits with dataset-specific mean/std."""
+    name = str(dataset).strip().lower()
+    if name in ("fashion", "fashion_mnist", "fashion-mnist"):
+        mean, std = FASHION_MEAN, FASHION_STD
+    else:
+        mean, std = MNIST_MEAN, MNIST_STD
     return transforms.Compose(
         [
             transforms.ToTensor(),
-            transforms.Normalize((MNIST_MEAN,), (MNIST_STD,)),
+            transforms.Normalize((mean,), (std,)),
         ]
     )
 
@@ -181,13 +193,23 @@ def load_mnist_raw(
     *,
     download: bool = True,
     image_transform: Callable | None = None,
+    dataset: str = "mnist",
 ) -> tuple[datasets.MNIST, datasets.MNIST]:
-    """Download/load MNIST train and test sets under ``root``."""
+    """Download/load MNIST or Fashion-MNIST train and test sets under ``root``."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    tfm = image_transform if image_transform is not None else default_image_transform()
-    train = datasets.MNIST(root=str(root), train=True, download=download, transform=tfm)
-    test = datasets.MNIST(root=str(root), train=False, download=download, transform=tfm)
+    name = str(dataset).strip().lower()
+    tfm = (
+        image_transform
+        if image_transform is not None
+        else default_image_transform(dataset=name)
+    )
+    if name in ("fashion", "fashion_mnist", "fashion-mnist"):
+        cls = datasets.FashionMNIST
+    else:
+        cls = datasets.MNIST
+    train = cls(root=str(root), train=True, download=download, transform=tfm)
+    test = cls(root=str(root), train=False, download=download, transform=tfm)
     return train, test
 
 
@@ -199,14 +221,22 @@ def build_mnist_datasets(
     seed: int = 0,
     download: bool = True,
     return_index: bool = False,
+    dataset: str = "mnist",
 ) -> MNISTDatasetBundle:
     """Build train / probe / test datasets sharing ``task_context``.
 
     Probe indices are carved from the official MNIST training split (seeded,
     stratified). The remainder is used for optimization. The official test
     split is reserved for accuracy evaluation only.
+
+    ``dataset``: ``"mnist"`` (default) or ``"fashion_mnist"`` / ``"fashion"``.
     """
-    train_full, test_full = load_mnist_raw(root=root, download=download)
+    name = str(dataset).strip().lower()
+    if name in ("fashion", "fashion_mnist", "fashion-mnist") and root == DEFAULT_DATA_ROOT:
+        root = DEFAULT_FASHION_ROOT
+    train_full, test_full = load_mnist_raw(
+        root=root, download=download, dataset=name
+    )
     n_train = len(train_full)
     targets = _mnist_targets(train_full)
     train_idx, probe_idx = split_train_probe_indices(
@@ -244,11 +274,14 @@ def build_mnist_loaders(
     num_workers: int = 0,
     download: bool = True,
     pin_memory: bool | None = None,
+    dataset: str = "mnist",
 ) -> MNISTLoaderBundle:
     """Build DataLoaders for train / probe / test sharing ``task_context``.
 
     Returns a dict with loaders plus the index tensors used for the split so
     tests can verify label transforms against raw labels.
+
+    ``dataset``: ``"mnist"`` (default) or ``"fashion_mnist"`` / ``"fashion"``.
 
     Task-switch contract (multi-worker)
     -----------------------------------
@@ -268,6 +301,7 @@ def build_mnist_loaders(
         probe_size=probe_size,
         seed=seed,
         download=download,
+        dataset=dataset,
     )
     if pin_memory is None:
         pin_memory = torch.cuda.is_available()

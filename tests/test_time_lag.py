@@ -10,6 +10,7 @@ from neuronca.eval.time_lag import (
     analyze_lag_curve,
     compute_rho_rec,
     first_crossing,
+    first_sustained_crossing,
     relative_first_crossing,
 )
 
@@ -40,6 +41,30 @@ def test_non_monotonic_first_crossing_not_max():
     assert result.rho_rec == pytest.approx(0.65)
     assert result.rho_max_in_window == pytest.approx(0.70)
     assert result.recovered_abs is True
+    # Collapse after first crossing → sustained starts only at final hold
+    assert first_sustained_crossing(times, rhos, threshold=0.60) == 75
+    assert result.t_star_sustained == 75
+    assert result.recovered_sustained is True
+
+
+def test_sustained_vs_abs_disagree_on_early_collapse():
+    """Classic activation artifact: high at t=0 then collapse then real recovery."""
+    times = [0, 25, 50, 75, 100]
+    rhos = [0.70, 0.20, 0.30, 0.65, 0.68]
+    assert first_crossing(times, rhos, threshold=0.60) == 0
+    assert first_sustained_crossing(times, rhos, threshold=0.60) == 75
+    result = analyze_lag_curve(times, rhos, threshold=0.60)
+    assert result.t_star_abs == 0
+    assert result.recovered_abs is True
+    assert result.t_star_sustained == 75
+    assert result.recovered_sustained is True
+
+
+def test_sustained_never_if_ends_below():
+    times = [0, 25, 50, 500]
+    rhos = [0.70, 0.80, 0.90, 0.50]
+    assert first_crossing(times, rhos, threshold=0.60) == 0
+    assert first_sustained_crossing(times, rhos, threshold=0.60) == float("inf")
 
 
 def test_rho_rec_at_window_end_when_no_crossing():

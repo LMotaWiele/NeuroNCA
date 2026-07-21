@@ -32,9 +32,17 @@ import torch.nn as nn
 from torch import Tensor
 
 from neuronca.broadcast.error import BroadcastErrorEncoder
-from neuronca.data.mnist import build_mnist_loaders
+from torch.utils.data import DataLoader, Subset
+
+from neuronca.data.mnist import (
+    TaskAwareDataset,
+    build_mnist_datasets,
+    build_mnist_loaders,
+    _mnist_targets,
+)
 from neuronca.data.tasks import (
     TaskContext,
+    make_digit_split_transform,
     make_identity_transform,
     make_task_transform,
 )
@@ -76,6 +84,138 @@ from neuronca.signals.gevb_alignment import GEVB_ALIGNMENT_CSV_COLUMNS
 
 CONDITION = "task_shift"
 
+
+def _filter_indices_by_digit(
+    indices: Tensor | Sequence[int],
+    targets: Tensor,
+    low: int,
+    high: int,
+) -> list[int]:
+    """Keep base indices whose raw MNIST labels lie in ``[low, high]``."""
+    out: list[int] = []
+    for i in indices:
+        ii = int(i)
+        y = int(targets[ii].item())
+        if low <= y <= high:
+            out.append(ii)
+    return out
+
+
+def _loader_from_indices(
+    train_full: Any,
+    indices: Sequence[int],
+    task_context: TaskContext,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    pin_memory: bool,
+) -> DataLoader:
+    base = Subset(train_full, list(indices))
+    ds = TaskAwareDataset(base, task_context)
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        drop_last=False,
+    )
+
+
+def _build_digit_split_phase_loaders(
+    task_ctx: TaskContext,
+    *,
+    root: str | Path,
+    probe_size: int,
+    seed: int,
+    batch_size: int,
+    num_workers: int,
+) -> dict[str, Any]:
+    """Build Task A (digits 0–4) and Task B (digits 5–9) loaders for B2.
+
+    Design B2: restricted 5-way split — A trains on labels 0–4; B on raw 5–9
+    remapped to 0–4 via :class:`~neuronca.data.tasks.DigitSplitTransform`.
+    Shared train/probe index draw first, then filtered by digit range.
+    """
+    # Temporary identity context only to build the stratified split once.
+    tmp_ctx = TaskContext(make_identity_transform())
+    bundles = build_mnist_datasets(
+        tmp_ctx,
+        root=root,
+        probe_size=probe_size,
+        seed=seed,
+        download=True,
+    )
+    train_full = bundles["train_full"]
+    targets = _mnist_targets(train_full)
+    train_idx = bundles["train_indices"]
+    probe_idx = bundles["probe_indices"]
+
+    a_train = _filter_indices_by_digit(train_idx, targets, 0, 4)
+    a_probe = _filter_indices_by_digit(probe_idx, targets, 0, 4)
+    b_train = _filter_indices_by_digit(train_idx, targets, 5, 9)
+    b_probe = _filter_indices_by_digit(probe_idx, targets, 5, 9)
+    if not a_train or not a_probe or not b_train or not b_probe:
+        raise RuntimeError(
+            f"digit_split filter empty: a_train={len(a_train)} a_probe={len(a_probe)} "
+            f"b_train={len(b_train)} b_probe={len(b_probe)}"
+        )
+
+    pin_memory = torch.cuda.is_available()
+    # Phase A: labels already in 0–4; Identity is fine (DigitSplit(0,4) also ok).
+    task_ctx.set_transform(make_identity_transform())
+    train_a = _loader_from_indices(
+        train_full,
+        a_train,
+        task_ctx,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    probe_a = _loader_from_indices(
+        train_full,
+        a_probe,
+        task_ctx,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,  # probe GT always single-process
+        pin_memory=pin_memory,
+    )
+    # Phase B loaders share the same TaskContext object; transform flipped at switch.
+    train_b = _loader_from_indices(
+        train_full,
+        b_train,
+        task_ctx,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    probe_b = _loader_from_indices(
+        train_full,
+        b_probe,
+        task_ctx,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    return {
+        "train_loader_a": train_a,
+        "probe_loader_a": probe_a,
+        "train_loader_b": train_b,
+        "probe_loader_b": probe_b,
+        "n_train_a": len(a_train),
+        "n_probe_a": len(a_probe),
+        "n_train_b": len(b_train),
+        "n_probe_b": len(b_probe),
+        "num_classes": 5,
+        "transform_b": make_digit_split_transform(low=5, high=9),
+    }
+
+
 TIME_LAG_CSV_COLUMNS: tuple[str, ...] = (
     "steps_after_switch",
     "seed",
@@ -86,6 +226,8 @@ TIME_LAG_CSV_COLUMNS: tuple[str, ...] = (
     "recovered_rel",
     "t_star_abs",
     "t_star_rel",
+    "t_star_sustained",
+    "recovered_sustained",
     "rho_pre_switch",
     "rho_rec",
     "rho_max_in_window",
@@ -392,24 +534,47 @@ def run_task_shift(
     shift_type = str(tasks_cfg.get("shift_type", "label_permutation"))
     perm_seed = int(tasks_cfg.get("permutation_seed", 123))
     num_classes = int(model_cfg.get("num_classes", 10))
+    shift_key = shift_type.lower().replace("-", "_")
+    is_digit_split = shift_key in ("digit_split", "b2")
 
     # --- data: shared TaskContext (A identity first) ---
     transform_a = make_identity_transform()
-    transform_b = make_task_transform(
-        shift_type, seed=perm_seed, num_classes=num_classes
-    )
     task_ctx = TaskContext(transform_a)
-    loaders = build_mnist_loaders(
-        task_ctx,
-        root=data_root,
-        probe_size=probe_size,
-        seed=int(seed),
-        batch_size=batch_size,
-        num_workers=train_workers,
-        download=True,
-    )
-    train_loader = loaders["train_loader"]
-    probe_loader = loaders["probe_loader"]
+    digit_meta: dict[str, Any] | None = None
+    train_loader_b: Any = None
+    probe_loader_b: Any = None
+
+    if is_digit_split:
+        # B2: 5-way digit-range split (A: 0–4, B: 5–9 → 0–4). Overrides head size.
+        digit_meta = _build_digit_split_phase_loaders(
+            task_ctx,
+            root=data_root,
+            probe_size=probe_size,
+            seed=int(seed),
+            batch_size=batch_size,
+            num_workers=train_workers,
+        )
+        train_loader = digit_meta["train_loader_a"]
+        probe_loader = digit_meta["probe_loader_a"]
+        train_loader_b = digit_meta["train_loader_b"]
+        probe_loader_b = digit_meta["probe_loader_b"]
+        transform_b = digit_meta["transform_b"]
+        num_classes = int(digit_meta["num_classes"])
+    else:
+        transform_b = make_task_transform(
+            shift_type, seed=perm_seed, num_classes=num_classes
+        )
+        loaders = build_mnist_loaders(
+            task_ctx,
+            root=data_root,
+            probe_size=probe_size,
+            seed=int(seed),
+            batch_size=batch_size,
+            num_workers=train_workers,
+            download=True,
+        )
+        train_loader = loaders["train_loader"]
+        probe_loader = loaders["probe_loader"]
 
     # --- model / optim ---
     hidden = tuple(model_cfg.get("hidden") or (256, 128, 64))
@@ -608,6 +773,10 @@ def run_task_shift(
     # (2) atomic flip to B
     task_ctx.set_transform(transform_b)
     assert task_ctx.version >= 1
+    if is_digit_split and train_loader_b is not None and probe_loader_b is not None:
+        # B2: also switch to digit-filtered loaders (new classes in B).
+        train_loader = train_loader_b
+        probe_loader = probe_loader_b
 
     # (3) switch_b0: transform B, SAME weights, NO optimizer, full GT
     for name, p in model.named_parameters():
@@ -805,6 +974,13 @@ def run_task_shift(
                 "recovered_rel": (rec.recovered_rel if rec else False),
                 "t_star_rel": (rec.t_star_rel if rec else None),
                 "rho_max_in_window": (rec.rho_max_in_window if rec else None),
+                # Diagnostic sustained-hold metric (not a pass/fail gate).
+                "t_star_sustained": (
+                    rec.t_star_sustained
+                    if rec and math.isfinite(rec.t_star_sustained)
+                    else None
+                ),
+                "recovered_sustained": (rec.recovered_sustained if rec else False),
                 "n_lag_points": len(times),
             }
 
@@ -827,6 +1003,14 @@ def run_task_shift(
                             rec.t_star_rel
                             if rec and math.isfinite(rec.t_star_rel)
                             else None
+                        ),
+                        "t_star_sustained": (
+                            rec.t_star_sustained
+                            if rec and math.isfinite(rec.t_star_sustained)
+                            else None
+                        ),
+                        "recovered_sustained": (
+                            rec.recovered_sustained if rec else False
                         ),
                         "rho_pre_switch": (
                             rho_pre_f if math.isfinite(rho_pre_f) else None
@@ -890,9 +1074,22 @@ def run_task_shift(
         "epochs_b": epochs_b,
         "probe_size": probe_size,
         "batch_size": batch_size,
+        "num_classes": num_classes,
         "device": str(device),
         "global_step": trainer.global_step,
         "b_steps": b_steps,
+        "digit_split": (
+            {
+                "a_digits": [0, 1, 2, 3, 4],
+                "b_digits": [5, 6, 7, 8, 9],
+                "n_train_a": digit_meta.get("n_train_a") if digit_meta else None,
+                "n_probe_a": digit_meta.get("n_probe_a") if digit_meta else None,
+                "n_train_b": digit_meta.get("n_train_b") if digit_meta else None,
+                "n_probe_b": digit_meta.get("n_probe_b") if digit_meta else None,
+            }
+            if is_digit_split
+            else None
+        ),
         "max_steps_per_epoch": max_steps_per_epoch,
         "lag_window_steps": lag_window_steps,
         "lag_stride": lag_stride,
