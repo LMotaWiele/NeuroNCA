@@ -123,20 +123,14 @@ def train_epoch_with_signals(
 
 
 @torch.no_grad()
-def collect_gated_novelty_probe(
+def collect_probe_activations(
     model: DynamicMLPReasoningNet,
     loader: DataLoader,
     *,
     device: str | torch.device | None = None,
     max_batches: int | None = None,
-    radius: float = 0.35,
-    k_min: int = 11,
-) -> GatedNoveltyContext:
-    """Run a probe pass and evaluate the three-part gated-novelty rule.
-
-    Collects per-sample CE, hidden post-activations, and incoming
-    pre-activations (for gap_imprinted birth).
-    """
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+    """Probe pass: layer post-acts, pre-acts (incoming), CE [B], labels [B]."""
     device_t = resolve_device(device)
     model.eval()
     model.to(device_t)
@@ -144,7 +138,7 @@ def collect_gated_novelty_probe(
     act_bufs: dict[str, list[torch.Tensor]] = {h: [] for h in HIDDEN_LAYERS}
     pre_bufs: dict[str, list[torch.Tensor]] = {h: [] for h in HIDDEN_LAYERS}
     ce_chunks: list[torch.Tensor] = []
-    act_key = {"h1": "act_fc1", "h2": "act_fc2", "h3": "act_fc3"}
+    y_chunks: list[torch.Tensor] = []
 
     n_batches = 0
     for batch in loader:
@@ -157,7 +151,6 @@ def collect_gated_novelty_probe(
             y = y.view(-1)
         if x.dim() > 2:
             x = x.view(x.size(0), -1)
-        # Manual pre-acts for gap imprint (same path as DynamicMLP.forward).
         act_in = x
         pre1 = F.linear(
             act_in,
@@ -176,7 +169,6 @@ def collect_gated_novelty_probe(
         logits = F.linear(
             h3, model.effective_weight("fc_out"), model.effective_bias("fc_out")
         )
-        # Keep last_activations consistent with a normal forward.
         model.last_activations = {
             "act_in": act_in.detach().clone(),
             "act_fc1": h1.detach().clone(),
@@ -186,14 +178,10 @@ def collect_gated_novelty_probe(
         }
         ce = F.cross_entropy(logits, y, reduction="none")
         ce_chunks.append(ce.detach().cpu())
+        y_chunks.append(y.detach().cpu())
         posts = {"h1": h1, "h2": h2, "h3": h3}
-        pres = {"h1": pre1, "h2": pre2, "h3": pre3}
         for h in HIDDEN_LAYERS:
             act_bufs[h].append(posts[h].detach().cpu())
-            # Pre-act for imprint uses the *incoming* drive: for gap residual we
-            # want the pre-synaptic population activity (input to this layer),
-            # not the post-ReLU pre of this unit. Incoming row maps pre→post:
-            # h1 ← act_in, h2 ← h1, h3 ← h2.
             if h == "h1":
                 pre_bufs[h].append(act_in.detach().cpu())
             elif h == "h2":
@@ -203,12 +191,47 @@ def collect_gated_novelty_probe(
         n_batches += 1
 
     if not ce_chunks:
-        # Empty probe → empty context (no growth triggers).
-        return GatedNoveltyContext()
+        empty = {h: torch.zeros(0, 1) for h in HIDDEN_LAYERS}
+        return empty, empty, torch.zeros(0), torch.zeros(0, dtype=torch.long)
 
     ce_all = torch.cat(ce_chunks, dim=0)
+    y_all = torch.cat(y_chunks, dim=0)
     layer_acts = {h: torch.cat(act_bufs[h], dim=0) for h in HIDDEN_LAYERS}
     pre_acts = {h: torch.cat(pre_bufs[h], dim=0) for h in HIDDEN_LAYERS}
+    return layer_acts, pre_acts, ce_all, y_all
+
+
+@torch.no_grad()
+def collect_gated_novelty_probe(
+    model: DynamicMLPReasoningNet,
+    loader: DataLoader,
+    *,
+    device: str | torch.device | None = None,
+    max_batches: int | None = None,
+    radius: float = 0.35,
+    k_min: int = 11,
+    neighbor_masks: dict[str, torch.Tensor] | None = None,
+    orch: PlasticityOrchestrator | None = None,
+) -> GatedNoveltyContext:
+    """Run a probe pass and evaluate the three-part gated-novelty rule.
+
+    Collects per-sample CE, hidden post-activations, and incoming
+    pre-activations (for gap_imprinted birth).
+
+    When ``orch`` is provided, refreshes the neighbor graph from probe
+    activations (grid or feature per config) and uses those masks for novelty.
+    """
+    layer_acts, pre_acts, ce_all, _y = collect_probe_activations(
+        model, loader, device=device, max_batches=max_batches
+    )
+    if ce_all.numel() == 0:
+        return GatedNoveltyContext()
+
+    nmasks = neighbor_masks
+    if orch is not None:
+        orch.refresh_neighbors(model, layer_acts=layer_acts)
+        nmasks = dict(orch.neighbors.masks)
+
     return evaluate_gated_novelty_context(
         model,
         layer_acts,
@@ -216,6 +239,7 @@ def collect_gated_novelty_probe(
         radius=float(radius),
         k_min=int(k_min),
         pre_acts=pre_acts,
+        neighbor_masks=nmasks,
     )
 
 
@@ -285,7 +309,11 @@ def train_plastic_model(
                 max_batches=novelty_probe_max_batches,
                 radius=float(orch.config.radius),
                 k_min=int(orch.config.novelty_k_min),
+                orch=orch,
             )
+        else:
+            # Still refresh neighbors for competitive neuron z (grid needs no acts).
+            orch.refresh_neighbors(model, layer_acts=None)
 
         # Plasticity step (cadence = epoch).
         scores = signal.neuron_scores()
@@ -327,6 +355,7 @@ def train_plastic_model(
 __all__ = [
     "train_epoch_with_signals",
     "train_plastic_model",
+    "collect_probe_activations",
     "collect_gated_novelty_probe",
     "evaluate",
     "train_epoch",

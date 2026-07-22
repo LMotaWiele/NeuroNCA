@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neuronca"
 version = "0.1.0"
-description = "NeuroNCA Phase 0: local importance signal validation"
+description = "NeuroNCA: structural plasticity research (Phase 0–1a closed)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

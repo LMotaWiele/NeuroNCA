@@ -68,10 +68,12 @@ SEEDS = (0, 1, 2)
 # Locked from results/phase1a_diagnostics/fashion_mnist_calibration/target_rate_probe.json
 # Do NOT use MNIST (0.77, 1.02, 1.28) on Fashion — h2/h3 are ~22–29% lower.
 FASHION_TARGET_RATES = {"h1": 0.71, "h2": 0.80, "h3": 0.91}
+# Product birth rate after RATE_CAP_RESOLVES_THRASH (cap=4 thrashes; cap=1 mild).
+FASHION_MAX_NEW_NEURONS = 1
 
 
 def _cfg(threshold_kind: str) -> PlasticityConfig:
-    """Fashion-calibrated full stack (same mechanism, dataset-specific r*_ℓ)."""
+    """Fashion-calibrated full stack (dataset-specific r*_ℓ + thrash-safe rate)."""
     return PlasticityConfig(
         radius=0.35,
         target_rates=dict(FASHION_TARGET_RATES),
@@ -81,7 +83,7 @@ def _cfg(threshold_kind: str) -> PlasticityConfig:
         prune_edge_fraction=0.05,
         prune_neuron_z=-1.0,
         max_new_edges_per_layer=64,
-        max_new_neurons_per_layer=4,
+        max_new_neurons_per_layer=FASHION_MAX_NEW_NEURONS,
         seed_edges_per_new_neuron=4,
         newborn_grace_steps=3,
         newborn_ema_init="layer_target",

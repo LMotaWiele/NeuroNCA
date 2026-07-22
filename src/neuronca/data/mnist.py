@@ -17,8 +17,12 @@ MNIST_STD = 0.3081
 # Fashion-MNIST standard channel-wise stats (ToTensor scale).
 FASHION_MEAN = 0.2860
 FASHION_STD = 0.3530
+# Kuzushiji-MNIST (KMNIST) channel-wise stats (ToTensor scale).
+KMNIST_MEAN = 0.1904
+KMNIST_STD = 0.3475
 DEFAULT_DATA_ROOT = Path("data/mnist")
 DEFAULT_FASHION_ROOT = Path("data/fashion_mnist")
+DEFAULT_KMNIST_ROOT = Path("data/kmnist")
 DEFAULT_PROBE_SIZE = 1024
 DEFAULT_IMAGE_SIZE = 28 * 28
 
@@ -57,6 +61,8 @@ def default_image_transform(
     name = str(dataset).strip().lower()
     if name in ("fashion", "fashion_mnist", "fashion-mnist"):
         mean, std = FASHION_MEAN, FASHION_STD
+    elif name in ("kmnist", "kuzushiji", "kuzushiji_mnist"):
+        mean, std = KMNIST_MEAN, KMNIST_STD
     else:
         mean, std = MNIST_MEAN, MNIST_STD
     return transforms.Compose(
@@ -195,7 +201,7 @@ def load_mnist_raw(
     image_transform: Callable | None = None,
     dataset: str = "mnist",
 ) -> tuple[datasets.MNIST, datasets.MNIST]:
-    """Download/load MNIST or Fashion-MNIST train and test sets under ``root``."""
+    """Download/load MNIST, Fashion-MNIST, or KMNIST train and test under ``root``."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     name = str(dataset).strip().lower()
@@ -206,6 +212,8 @@ def load_mnist_raw(
     )
     if name in ("fashion", "fashion_mnist", "fashion-mnist"):
         cls = datasets.FashionMNIST
+    elif name in ("kmnist", "kuzushiji", "kuzushiji_mnist"):
+        cls = datasets.KMNIST
     else:
         cls = datasets.MNIST
     train = cls(root=str(root), train=True, download=download, transform=tfm)
@@ -229,11 +237,14 @@ def build_mnist_datasets(
     stratified). The remainder is used for optimization. The official test
     split is reserved for accuracy evaluation only.
 
-    ``dataset``: ``"mnist"`` (default) or ``"fashion_mnist"`` / ``"fashion"``.
+    ``dataset``: ``"mnist"`` (default), ``"fashion_mnist"`` / ``"fashion"``,
+    or ``"kmnist"``.
     """
     name = str(dataset).strip().lower()
     if name in ("fashion", "fashion_mnist", "fashion-mnist") and root == DEFAULT_DATA_ROOT:
         root = DEFAULT_FASHION_ROOT
+    if name in ("kmnist", "kuzushiji", "kuzushiji_mnist") and root == DEFAULT_DATA_ROOT:
+        root = DEFAULT_KMNIST_ROOT
     train_full, test_full = load_mnist_raw(
         root=root, download=download, dataset=name
     )
@@ -281,7 +292,8 @@ def build_mnist_loaders(
     Returns a dict with loaders plus the index tensors used for the split so
     tests can verify label transforms against raw labels.
 
-    ``dataset``: ``"mnist"`` (default) or ``"fashion_mnist"`` / ``"fashion"``.
+    ``dataset``: ``"mnist"`` (default), ``"fashion_mnist"`` / ``"fashion"``,
+    or ``"kmnist"``.
 
     Task-switch contract (multi-worker)
     -----------------------------------

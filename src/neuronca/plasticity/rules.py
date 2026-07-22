@@ -19,6 +19,7 @@ from neuronca.models.dynamic_mlp import (
     _LINEAR_ENDPOINTS,
 )
 from neuronca.plasticity.coords import linear_decay, pairwise_distances
+from neuronca.plasticity.neighbors import neighbor_mask_within_radius
 from neuronca.plasticity.threshold import ThresholdPolicy, normalize_target_rates
 
 # Probe-locked defaults (1-epoch ActivationMagnitude mean EMA per layer).
@@ -39,6 +40,17 @@ class PlasticityConfig:
     """
 
     radius: float = 0.35
+    # Neighbor definition for same-layer local rules (novelty + neuron competitive z).
+    # Experiment 1: grid (control) vs feature (treatment). Edge incentive still uses
+    # grid radius (cross-population placement); only get_neighbors-scope rules swap.
+    neighbor_metric: str = "grid"  # grid | feature
+    # Feature similarity: cosine (primary) | correlation (fallback)
+    neighbor_similarity: str = "cosine"
+    # None → auto-match k to mean grid-neighbor count each refresh.
+    neighbor_top_k: int | None = None
+    neighbor_churn_bound: float = 0.5
+    # EMA on activation signatures (0 = instantaneous; stability response → 0.5).
+    neighbor_signature_ema_mu: float = 0.0
     # Prefer per-layer map; empty → use target_rate scalar or DEFAULT_TARGET_RATES.
     target_rates: dict[str, float] = field(default_factory=dict)
     target_rate: float | None = None  # optional broadcast for tests only
@@ -95,6 +107,24 @@ class PlasticityConfig:
     # Rank / fire only units whose mean neighbor-max is in the bottom this
     # fraction among density+CE-pass candidates (1.0 = all CE+density passers).
     novelty_rank_fraction: float = 1.0
+    # --- Self-calibrating constants (local running statistics) ---
+    # Product: r_star only (after warm-start probe). prune_cutoff / straddle are
+    # NOT SHIPPED (§4.5: no Fashion recovery beyond r_star; keep frozen z-cut
+    # and live per-birth straddle B). Defaults all False for MNIST configs.
+    self_calibrate: dict[str, bool] = field(
+        default_factory=lambda: {
+            "r_star": False,
+            "prune_cutoff": False,  # research only — do not enable in product
+            "straddle": False,  # research only — do not enable in product
+        }
+    )
+    self_cal_mu_r_star: float = 0.999
+    self_cal_mu_prune: float = 0.999
+    self_cal_mu_straddle: float = 0.99
+    # None = update every plasticity step; int N = hybrid every N steps.
+    self_cal_hybrid_period: int | None = None
+    # Target left-tail quantile for self-cal prune cut (≈ Φ(-1)).
+    self_cal_prune_quantile: float = 0.1587
 
     def __post_init__(self) -> None:
         # Correctness: contraction prune must not judge while the temporary
@@ -113,6 +143,14 @@ class PlasticityConfig:
         if self.target_rate is not None:
             return normalize_target_rates(self.target_rate)
         return dict(DEFAULT_TARGET_RATES)
+
+    def self_calibrate_flags(self) -> dict[str, bool]:
+        raw = dict(self.self_calibrate or {})
+        return {
+            "r_star": bool(raw.get("r_star", False)),
+            "prune_cutoff": bool(raw.get("prune_cutoff", False)),
+            "straddle": bool(raw.get("straddle", False)),
+        }
 
 
 def population_signals_from_activation(
@@ -293,11 +331,43 @@ def competitive_neuron_zscores(
     net: DynamicMLPReasoningNet,
     layer: str,
     signals: dict[str, Tensor],
+    neighbor_mask: Tensor | None = None,
 ) -> Tensor:
-    """Z-score of neuron signals among active units in the same hidden layer."""
-    s = signals[layer]
-    a = net.active_mask(layer).cpu()
-    return local_zscore(s, a)
+    """Z-score of neuron signals among neighbors (or whole layer if mask is None).
+
+    When ``neighbor_mask`` is provided (Experiment 1 / design-intent local
+    competition), each unit's z is computed among ``N(i) ∪ {i}`` active peers
+    under the current neighbor definition. Without a mask, falls back to the
+    historical whole-layer z-score among active units.
+    """
+    s = signals[layer].float().cpu()
+    a = net.active_mask(layer).cpu().bool()
+    if neighbor_mask is None:
+        return local_zscore(s, a)
+    nbr = neighbor_mask.bool().cpu()
+    if nbr.shape[0] != s.numel() or nbr.shape[1] != s.numel():
+        raise ValueError(
+            f"neighbor_mask shape {tuple(nbr.shape)} != [{s.numel()}, {s.numel()}]"
+        )
+    z = torch.zeros_like(s)
+    active_idx = a.nonzero(as_tuple=False).view(-1).tolist()
+    for i in active_idx:
+        members = nbr[i].clone()
+        members[i] = True
+        members = members & a
+        mcount = int(members.sum().item())
+        if mcount < 2:
+            # Isolated / under-floor: no local competition signal → z = 0
+            z[i] = 0.0
+            continue
+        vals = s[members]
+        mean = vals.mean()
+        std = vals.std(unbiased=False)
+        if float(std) < 1e-8:
+            z[i] = 0.0
+        else:
+            z[i] = (s[i] - mean) / (std + 1e-8)
+    return z
 
 
 def select_edges_to_prune(
@@ -578,20 +648,7 @@ class GatedNoveltyContext:
         return {h: s.as_dict() for h, s in self.by_layer.items()}
 
 
-def neighbor_mask_within_radius(
-    coords: Tensor,
-    active: Tensor,
-    radius: float,
-) -> Tensor:
-    """Bool ``[H, H]``: active pairs within radius; diagonal False."""
-    c = coords.float()
-    a = active.bool()
-    # Inactive / NaN → exclude
-    finite = torch.isfinite(c).all(dim=-1) & a
-    dist = pairwise_distances(c, c)
-    within = (dist <= float(radius)) & finite.unsqueeze(0) & finite.unsqueeze(1)
-    within.fill_diagonal_(False)
-    return within
+# neighbor_mask_within_radius re-exported from neighbors for backward compatibility
 
 
 def gap_imprint_direction(
@@ -695,16 +752,20 @@ def gated_novelty_scores_for_layer(
     *,
     radius: float,
     k_min: int,
+    neighbor_mask: Tensor | None = None,
 ) -> tuple[GatedNoveltyLayerStats, list[tuple[int, float, float, int]], dict[int, Tensor]]:
     """Score active units for gated novelty on one layer.
 
     Args:
         acts: ``[B, H]`` post-activation (absolute magnitude used).
         ce: ``[B]`` per-sample cross-entropy.
-        coords: ``[H, 2]`` unit-square coords.
+        coords: ``[H, 2]`` unit-square coords (used only when neighbor_mask is None).
         active: ``[H]`` bool.
-        radius: sensing radius R.
+        radius: sensing radius R (grid fallback).
         k_min: density floor (exclude if |N| < k_min).
+        neighbor_mask: optional precomputed ``[H, H]`` neighbor graph. When set,
+            this is the sole neighbor definition (grid or feature). When None,
+            falls back to grid radius on ``coords``.
 
     Returns:
         stats, candidates (slot, mean_nbr_max, local_ce_excess, n_neighbors)
@@ -723,7 +784,16 @@ def gated_novelty_scores_for_layer(
     if stats.n_active == 0:
         return stats, [], {}
 
-    nbr = neighbor_mask_within_radius(coords.cpu().float(), a, radius)
+    if neighbor_mask is not None:
+        nbr = neighbor_mask.bool().cpu()
+        if nbr.shape != (H, H):
+            raise ValueError(f"neighbor_mask must be [{H},{H}], got {tuple(nbr.shape)}")
+        # Ensure inactive pairs are excluded
+        nbr = nbr & a.unsqueeze(0) & a.unsqueeze(1)
+        nbr = nbr.clone()
+        nbr.fill_diagonal_(False)
+    else:
+        nbr = neighbor_mask_within_radius(coords.cpu().float(), a, radius)
     abs_act = acts.detach().float().abs().cpu()  # [B, H]
     ce_cpu = ce.detach().float().cpu()
     mean_ce = float(ce_cpu.mean().item()) if ce_cpu.numel() else 0.0
@@ -821,12 +891,14 @@ def evaluate_gated_novelty_context(
     radius: float,
     k_min: int,
     pre_acts: dict[str, Tensor] | None = None,
+    neighbor_masks: dict[str, Tensor] | None = None,
 ) -> GatedNoveltyContext:
     """Build a full :class:`GatedNoveltyContext` from probe activations + CE.
 
     ``layer_acts`` maps ``h1|h2|h3`` → ``[B, H_max]`` post-activations.
     ``pre_acts`` maps ``h1|h2|h3`` → ``[B, fan_in]`` pre-activations of the
     incoming linear (for gap_imprinted birth).
+    ``neighbor_masks`` optional per-layer ``[H,H]`` graphs (grid or feature).
     """
     ctx = GatedNoveltyContext()
     ctx.ce = ce.detach().float().cpu()
@@ -839,6 +911,9 @@ def evaluate_gated_novelty_context(
         acts = layer_acts[h]
         active = net.active_mask(h).cpu()
         coords = net.coords(h).cpu()
+        nmask = None
+        if neighbor_masks is not None and h in neighbor_masks:
+            nmask = neighbor_masks[h]
         stats, _cands, gap_masks = gated_novelty_scores_for_layer(
             acts,
             ce,
@@ -846,6 +921,7 @@ def evaluate_gated_novelty_context(
             active,
             radius=radius,
             k_min=k_min,
+            neighbor_mask=nmask,
         )
         stats.layer = h
         ctx.by_layer[h] = stats

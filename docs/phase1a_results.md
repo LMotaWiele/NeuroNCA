@@ -1,8 +1,13 @@
 # Phase 1a Results — Baseline Structural Plasticity
 
-**Status:** **MNIST Pareto `PARETO_BOTH_FAIL` (closed).** Fashion-MNIST dense scout stands; **prior plastic Fashion Pareto is `INVALID_UNTIL_RECALIBRATED_RERUN`** — it reused MNIST-locked `r*_ℓ` without re-probe. Fashion calibration locks **r\* = (0.71, 0.80, 0.91)**; straddle SEPARATES_OK; growth-fire PASS. Artifacts: `pareto_comparison/`, `fashion_mnist_pareto/`, `fashion_mnist_calibration/`.
+**Status: PROJECT CLOSED.** MNIST mechanism + Pareto closed; Fashion thrash closed;
+self-cal `r*_ℓ` ship-only validated; adaptation (mild + split→restore) closed —
+thesis not supported on digit tasks; spatial coherence → no regional build;
+feature-neighbors Exp 1 → `FEATURE_NEIGHBORS_WORSE` (no Exp 2).
 
-**Date:** 2026-07-22  
+**Date:** 2026-07-22
+
+
 
 **Pre-registration:** [`phase1a_preregistration.md`](phase1a_preregistration.md)  
 **Diagnostic root:** `results/phase1a_diagnostics/`  
@@ -1286,7 +1291,151 @@ Plastic / fixed (s0) ≈ **23–25×** on max and sum swing. Static nets climb s
 2. **Growth insertion** up to 12 gap-imprinted births/ep (late crashes often grown=12, pruned=0)
 3. **Neuron z** `prune_neuron_z=-1.0` (early ep2 co-timed with mass prune; **cannot alone** explain prune=0 crashes; within-layer z is scale-free so wider gap Δ does not auto-break it)
 
-**Before 20ep efficiency:** cheap grow/prune 2×2 ablate (full / grow-only / prune-only / frozen) on Fashion r\*, seed 0, 8–12ep. Do **not** treat a thrashing 20ep final acc as a clean efficiency ceiling without that isolation or an explicit decision to accept orchestrator thrash as product behavior.
+##### Grow/prune 2×2 isolation (executed)
+
+**Artifact:** `results/phase1a_diagnostics/fashion_mnist_calibration/grow_prune_2x2/`  
+**Script:** `scripts/run_fashion_grow_prune_ablate.py`  
+Fashion r\*, seed 0, 12ep. Pre-registered thrash bar: max\|Δ\|≥10pp or sum\|Δ\|≥40pp.
+
+| Arm | max\|Δ\| | sum\|Δ\| | #Δ>5 | final acc | grown | pruned | e_pruned |
+|-----|--------:|---------:|-----:|----------:|------:|-------:|---------:|
+| **full** | 27.2 | 126 | 7 | 0.661 | 134 | 27 | 112k |
+| **grow_only** | **41.5** | **171** | **10** | 0.676 | 138 | 0 | 0 |
+| **prune_only** | **1.2** | **4.9** | **0** | **0.876** | 0 | 182 | 106k |
+| **frozen** | 1.0 | 5.3 | 0 | 0.877 | 0 | 0 | 0 |
+
+**Verdict: `GROWTH_SUFFICIENT`.** Grow-only thrashes *at least as hard as* the full stack (worse max/sum). Prune-only is as smooth as frozen and lands in the dense high-80s. Continuous **gap-imprinted insertion** (rate/caps/cadence) is **sufficient** for residual instability; **prune constants are not required** for the thrash phenotype (and edge+neuron prune alone is well-behaved on Fashion).
+
+**Ruled out as thrash driver:** `prune_edge_fraction`, `prune_neuron_z` (as sole or primary cause).  
+**Named driver:** growth path — up to ~12 births/ep of gap_imprinted specialists into a training net.
+
+**Before 20ep efficiency:** either (i) probe birth rate / cadence / imprint scale on Fashion and re-hold, or (ii) run 20ep with trajectory caveats and treat thrash as a known growth-side product property — do **not** spend further budget re-deriving prune z.
+
+##### Growth locus validation on Fashion grow_only (executed)
+
+**Artifact:** `results/phase1a_diagnostics/fashion_mnist_calibration/growth_locus_validation/`  
+**Script:** `scripts/run_fashion_growth_locus_validation.py`  
+Grow_only, Fashion r\*, seed 0, 12ep, n=144 births. Locus signal = **novelty (−nbr_max)** (product ranking), not self-act.
+
+**1. Trigger mistarget (MNIST methodology)**
+
+| Metric | Fashion grow_only | MNIST (act>r\* parents) |
+|--------|------------------:|------------------------:|
+| mean corr(novelty, CE) | **+0.095** | n/a |
+| mean corr(self_act, CE) | −0.001 | **−0.009** |
+| frac corr(novelty,CE)>0.05 | **67%** | 0% (act) |
+| mean CE_top_nov − CE_all | **+0.122** | −0.019 (act top) |
+| mean local CE excess on gap | **+0.123** | — |
+| frac genuine demand | **67%** | **0%** |
+| frac mistarget (gate, weak corr) | 33% | 72% |
+
+**Mistarget verdict: `TRIGGER_TRACKS_ERROR`.** Opposite of MNIST `MISTARGET_HOT_BUT_FINE`. Gated novelty on Fashion fires on error-adjacent coverage gaps.
+
+**2. Post-birth local CE outcome (new)**
+
+Fixed birth `gap_mask` samples; mean CE at +1/+2/+3. Helped if ΔCE_gap < −0.01.
+
+| Horizon | n | mean ΔCE_gap | frac helped | frac flat | frac worsened |
+|--------:|--:|-------------:|------------:|----------:|--------------:|
+| +1 | 132 | −0.002 | 40% | 22% | 38% |
+| **+2** | 120 | **−0.016** | **60%** | 13% | 28% |
+| +3 | 108 | **−0.020** | **66%** | 7% | 27% |
+
+**Outcome verdict: `GROWTH_HELPS_LOCUS`.** Majority of births reduce CE on the samples they were born for by +2–3 epochs — even while **global** val acc thrashes (this run: 0.84→0.37→0.85).
+
+**Combined: `TRIGGER_OK_AND_HELPS`.** Thrash is **not** “growth is mistargeted nonsense.” Trigger finds real local error; births often repair that locus. Global volatility is best attributed primarily to **insertion rate / continuous architecture shock** (~12 births/ep), not a MNIST-style need-signal failure. **Next lever: birth rate/cap/cadence**, not novelty redesign and not prune z.
+
+##### Worsened minority vs crash timing (executed)
+
+**Artifact:** `.../growth_locus_validation/WORSENED_VS_CRASH.md`
+
+The 27% “worsened” at +3 is real; local help ≠ “all insertions healthy.” Proximate test (births at *t−1*, outcome **+1** at *t* = global transition epoch):
+
+| Window | n | % worsened (h+1) |
+|--------|--:|-----------------:|
+| Crash transitions (≤−8pp) | 24 | **42%** |
+| Non-crash transitions | 108 | **37%** |
+| Diff | | **+5pp** (n.s.; 95% CI crosses 0) |
+
+Corr(frac_worsened@h+1, next Δacc) = **+0.23** (wrong sign for “bad birth → drop”). Ep4 cohort before the −40pp crash: only **42%** worsened at +1; their **100%** worsened at +2 is measured at **ep6 after the crash** — confounded by global CE landscape disruption. Epoch worsen rates vary **0–92%**, so “flat constant 27% background” is also too strong.
+
+**Verdict: `NOT_PROXIMATE_CAUSE_OF_CRASHES__RATE_NOT_FLAT`.** Rate-cap remains the primary thrash lever. A quality filter is optional insurance for the minority, not required by crash-clustering evidence.
+
+##### Rate-cap ablate (executed — final Fashion growth thrash lever)
+
+**Artifact:** `results/phase1a_diagnostics/fashion_mnist_calibration/rate_cap_ablate/`  
+**Script:** `scripts/run_fashion_rate_cap_ablate.py`  
+Fashion r\*, full product stack, seed 0, 12ep; only `max_new_neurons_per_layer` varied.
+
+| Cap | ≤births/ep | mean grown/ep | max\|Δ\| | sum\|Δ\| | thrash | mild | final | min |
+|----:|----------:|-------------:|--------:|---------:|:------:|:----:|------:|----:|
+| **4** (product) | 12 | 11.2 | **27.2** | **126** | yes | no | 0.661 | 0.465 |
+| **2** | 6 | 5.8 | 11.8 | 44.5 | yes | no | 0.738 | 0.729 |
+| **1** | 3 | 3.0 | **3.7** | **12.6** | **no** | **yes** | **0.848** | **0.828** |
+| **0** | 0 | 0 | 1.2 | 4.9 | no | yes | 0.876 | 0.850 |
+
+Spearman(cap, max_swing) = **1.0**. Cap=1 vs product: Δfinal **+0.19**, Δmin **+0.36** (less floor crash).
+
+**Verdict: `RATE_CAP_RESOLVES_THRASH`.** Cadence/volume is causal for global instability. Fashion product fix for thrash: lower birth rate (`max_new_neurons_per_layer=1` or equivalent ≤3 births/ep), not novelty redesign, not prune re-derivation.
+
+##### Fashion-MNIST chapter close
+
+**Full write-up:** `results/phase1a_diagnostics/fashion_mnist_calibration/FASHION_CHAPTER_CLOSE.md`
+
+| Claim | Status |
+|-------|--------|
+| MNIST constants transfer unchanged | **false** (r\* re-probe required) |
+| Thrash = Fashion+SGD | **false** (fixed topo smooth) |
+| Thrash = prune over-aggression | **false** (grow_only worse; prune_only smooth) |
+| Trigger mistargeted on Fashion | **false** (`TRIGGER_TRACKS_ERROR`) |
+| Births never help locally | **false** (`GROWTH_HELPS_LOCUS`) |
+| Worsened minority causes crashes | **false** (proximate window null) |
+| Thrash = insertion volume at product cap | **true** (`RATE_CAP_RESOLVES_THRASH`) |
+
+**Chapter status: closed.** Optional follow-ups (multi-seed cap=1 hold, recalibrated Pareto under cap=1) are product polish, not open science on the thrash mechanism.
+
+### Self-calibrating constants (validated)
+
+**Artifact:** `results/phase1a_diagnostics/self_calibrate/`  
+**Code:** `src/neuronca/plasticity/self_calibrate.py`, `probe_rates.py`  
+**Battery:** `scripts/run_self_calibrate_battery.py`
+
+Converts hand-ported constants to local EMAs with **mandatory warm-start** from the existing one-epoch activation probe. No outer search.
+
+| Constant | Ship? | Result |
+|----------|:-----:|--------|
+| **r\*_ℓ** | **yes** | §4.1–4.6 PASS; Fashion auto-matches hand probe; KMNIST stable |
+| prune z-cut | **no** | §4.5: zero incremental recovery vs r\* alone; keep frozen `-1.0`. Do **not** hybrid-stabilize (unneeded conversion). |
+| straddle layer EMA | **no** | Live per-birth B already local; layer EMA not shipped |
+
+**Locked:** `self_cal_mu_r_star=0.999`; r\* hybrid not needed. Ship decision: `self_calibrate/SHIP_DECISION.md`.
+
+| Fashion r\* source | h1 | h2 | h3 | mean contr. frac |
+|--------------------|---:|---:|---:|-----------------:|
+| Ported MNIST | 0.77 | 1.02 | 1.28 | 0.29 |
+| Hand probe | 0.71 | 0.80 | 0.91 | — |
+| Self-cal | **0.705** | **0.797** | **0.909** | **0.18** |
+
+**Adaptation-cost (closed on digit tasks):** mild one-way shifts →
+`ADAPT_COST_FIXED_WINS` (everyone recovers in 1 ep; plastic +~35% wall-clock).
+Decisive split→restore retention → **`RETENTION_FIXED_WINS`** (fixed retains more
+of A after B; 3/3 seeds). Thesis not supported here; stop rule applied.
+See `adaptation_cost/RESULTS.md`, `adaptation_cost/split_restore/RESULTS.md`.
+
+**Spatial specialization coherence (re-slice, closed):** neighbor agreement of
+specialization *signatures* is **layer-dependent** (h1 strong; h2 null; h3 weak).
+Units that **stay specialized** do **not** cluster spatially. Verdict
+`MIXED_LAYER_DEPENDENT` → **do not** build regional consolidation.
+See `specialization_spatial_coherence/RESULTS.md`.
+
+**Feature-space neighbors Exp 1 (closed):** single-variable swap
+`neighbor_metric: grid | feature` (probe-activation cosine, matched-k, churn
+guard). Primary: soft directional lower own-subset ΔL under feature (1/3 seeds
+hit ≥25% margin — not a win). Secondary: **stationary regression** (seed 1
+collapse; mean acc −6.4 pp; larger swings). Neighbor churn stayed bounded
+(~0.15–0.18 ≪ 0.5). Headline **`FEATURE_NEIGHBORS_WORSE`** → **no Experiment 2**
+(cohort consolidation). See `feature_neighbors_ab/RESULTS.md`,
+`docs/feature_neighbors_preregistration.md`.
 
 #### Prior uncalibrated plastic Pareto — retracted as a mechanism finding
 
@@ -1331,9 +1480,26 @@ Those runs used `target_rates = (0.77, 1.02, 1.28)` on Fashion data. Unstable mi
 | **Novelty density confound + gated prereg** | `results/phase1a_diagnostics/novelty_density_gate/` |
 | **k_min density-floor validation** | `results/phase1a_diagnostics/novelty_kmin_validation/` |
 | **Gated novelty battery (live)** | `results/phase1a_diagnostics/gated_novelty_battery/` |
+| **Self-calibrate (ship r\* only)** | `results/phase1a_diagnostics/self_calibrate/` |
+| **Adaptation cost + split→restore** | `results/phase1a_diagnostics/adaptation_cost/` |
+| **Spatial specialization coherence** | `results/phase1a_diagnostics/specialization_spatial_coherence/` |
+| **Feature neighbors Exp 1** | `results/phase1a_diagnostics/feature_neighbors_ab/` |
+| **Diagnostics index** | `docs/phase1a_diagnostics_index.md` |
 
 ---
 
-## One-paragraph abstract (for citations / Phase 1 handoff)
+## One-paragraph abstract (closed project)
 
-Phase 1a implements neuron-level homeostasis on a dense-start MLP. Under **Kaiming** birth, zero grown units permanently establish. **Parent-perturbed** birth establishes but yields **clones** (parent–child weight cos ~0.99; duplicate capacity, not new function). On the parents of those established clones, the growth trigger is **mistargeted**: parents are hot (~2× r*, ~88th EMA percentile) in a ~94% acc net, yet activity is **not** tied to higher local CE/error (mean corr≈0; CE when parent is most active is **below** mean CE). The rule “grow where act > r*” confuses well-engaged units with under-capacity. Expensive redundant clones of already-fine neighborhoods are the expected outcome. **Next lever: redefine need (error/uncertainty residual), not further birth-init tuning.** Structured birth remains useful only after triggers mark real demand. `τ` lock and multi-seed primary held.
+Phase 1a implements neuron-level homeostasis on a dense-start MLP. **Kaiming**
+birth does not establish; **parent-perturbed** birth establishes as clones
+(cos~0.99), not specialists. **Gated novelty + gap_imprinted** birth yields real
+establishment and stays-specialized rates (~91% at 6 ep; ~79% at 20 ep under
+fixed). Stationary MNIST **Pareto fails** vs dense (flat accuracy–parameter
+frontier). Fashion thrash under ported MNIST r\* is a **rate** problem
+(`RATE_CAP_RESOLVES_THRASH` at cap=1) with a real need signal; **self-cal r\*_ℓ**
+ships, prune/straddle self-cal do not. Adaptation on digit tasks is **not
+supported**: mild shifts recover in one epoch for all arms (plastic pays
+wall-clock); split→restore shows fixed retains more of A than plastic. Spatial
+specialist regions and feature-space neighbors do not justify consolidation
+builds (`MIXED_LAYER_DEPENDENT`, `FEATURE_NEIGHBORS_WORSE`). **Project closed**
+at these bounded findings.

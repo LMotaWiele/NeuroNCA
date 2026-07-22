@@ -25,6 +25,7 @@ from neuronca.plasticity.masks import (
     EDGE_ORIGIN_INIT,
     NEURON_ORIGIN_GROWN,
 )
+from neuronca.plasticity.neighbors import NeighborGraph
 from neuronca.plasticity.rules import (
     GatedNoveltyContext,
     PlasticityConfig,
@@ -41,6 +42,7 @@ from neuronca.plasticity.rules import (
     select_neurons_to_grow_gated_novelty,
     select_neurons_to_prune,
 )
+from neuronca.plasticity.self_calibrate import SelfCalibrateState
 from neuronca.plasticity.threshold import (
     SlidingThreshold,
     ThresholdPolicy,
@@ -107,6 +109,20 @@ class StructureEventLog:
     novelty_ce_gate_pass_by_layer: dict[str, int] = field(default_factory=dict)
     novelty_candidates_by_layer: dict[str, int] = field(default_factory=dict)
     novelty_under_floor_frac_by_layer: dict[str, float] = field(default_factory=dict)
+    # Self-calibrating constant snapshots (empty when feature off).
+    r_star_live: dict[str, float] = field(default_factory=dict)
+    prune_z_cut_live: float | None = None
+    straddle_ref_live: dict[str, Any] = field(default_factory=dict)
+    self_cal_flags: dict[str, bool] = field(default_factory=dict)
+    n_contraction_frac: float = 0.0  # n_contraction / n_active (false-contraction monitor)
+    # Neighbor-graph diagnostics (Experiment 1)
+    neighbor_metric: str = "grid"
+    neighbor_mean_churn: float = 0.0
+    neighbor_churn_by_layer: dict[str, float] = field(default_factory=dict)
+    neighbor_matched_k_by_layer: dict[str, int] = field(default_factory=dict)
+    neighbor_mean_count_by_layer: dict[str, float] = field(default_factory=dict)
+    neighbor_unstable: bool = False
+    neighbor_signature_ema_mu: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -159,6 +175,18 @@ class StructureEventLog:
             "novelty_under_floor_frac_by_layer": dict(
                 self.novelty_under_floor_frac_by_layer
             ),
+            "r_star_live": dict(self.r_star_live),
+            "prune_z_cut_live": self.prune_z_cut_live,
+            "straddle_ref_live": dict(self.straddle_ref_live) if self.straddle_ref_live else {},
+            "self_cal_flags": dict(self.self_cal_flags),
+            "n_contraction_frac": self.n_contraction_frac,
+            "neighbor_metric": self.neighbor_metric,
+            "neighbor_mean_churn": self.neighbor_mean_churn,
+            "neighbor_churn_by_layer": dict(self.neighbor_churn_by_layer),
+            "neighbor_matched_k_by_layer": dict(self.neighbor_matched_k_by_layer),
+            "neighbor_mean_count_by_layer": dict(self.neighbor_mean_count_by_layer),
+            "neighbor_unstable": self.neighbor_unstable,
+            "neighbor_signature_ema_mu": self.neighbor_signature_ema_mu,
         }
 
 
@@ -182,6 +210,30 @@ class PlasticityOrchestrator:
         self.input_ema_decay: float = 0.99
         # When True, select_edges_to_grow records pair IDs for persistence traces.
         self.collect_edge_pairs: bool = False
+        # Self-calibrating running statistics (optional; warm-start required).
+        flags = self.config.self_calibrate_flags()
+        self.self_cal = SelfCalibrateState.from_config(
+            flags,
+            mu_r_star=float(self.config.self_cal_mu_r_star),
+            mu_prune=float(self.config.self_cal_mu_prune),
+            mu_straddle=float(self.config.self_cal_mu_straddle),
+            hybrid_period=self.config.self_cal_hybrid_period,
+            prune_target_quantile=float(self.config.self_cal_prune_quantile),
+        )
+        # Same-layer neighbor graph (grid | feature). Single-variable Experiment 1.
+        fixed_k = None
+        if self.config.neighbor_top_k is not None:
+            k = int(self.config.neighbor_top_k)
+            fixed_k = {h: k for h in HIDDEN_LAYERS}
+        self.neighbors = NeighborGraph(
+            metric=str(self.config.neighbor_metric),
+            radius=float(self.config.radius),
+            churn_bound=float(self.config.neighbor_churn_bound),
+            similarity=str(self.config.neighbor_similarity),
+            signature_ema_mu=float(self.config.neighbor_signature_ema_mu),
+            fixed_k_by_layer=fixed_k,
+        )
+        self.neighbor_refresh_log: list[dict[str, Any]] = []
 
     def ensure_policy(self, net: DynamicMLPReasoningNet) -> ThresholdPolicy:
         if self.policy is not None:
@@ -196,6 +248,33 @@ class PlasticityOrchestrator:
             pressure_margin=self.config.pressure_margin,
         )
         return self.policy
+
+    def warm_start_self_cal(
+        self,
+        *,
+        target_rates: dict[str, float] | None = None,
+        prune_z_cut: float = -1.0,
+    ) -> None:
+        """Initialize self-cal trackers from a probe (required when flags ON).
+
+        ``target_rates`` must come from :func:`probe_target_rates` (or equivalent
+        one-epoch ActivationMagnitude means) — never zeros or a foreign dataset.
+        """
+        if self.self_cal.flags.r_star:
+            if not target_rates:
+                raise ValueError("warm_start_self_cal requires target_rates when r_star ON")
+            assert self.self_cal.rates is not None
+            self.self_cal.rates.warm_start(target_rates)
+            self.config.target_rates = {
+                h: float(target_rates[h]) for h in HIDDEN_LAYERS
+            }
+            if self.policy is not None:
+                self.policy.target_rates = dict(self.config.target_rates)
+        if self.self_cal.flags.prune_cutoff:
+            assert self.self_cal.prune is not None
+            self.self_cal.prune.warm_start(float(prune_z_cut))
+        if self.self_cal.flags.straddle and self.self_cal.straddle is not None:
+            self.self_cal.straddle.warm_start()
 
     @torch.no_grad()
     def update_input_signal_ema(self, act_in: Tensor) -> None:
@@ -216,6 +295,29 @@ class PlasticityOrchestrator:
         if self.input_signal_ema is not None:
             scores["in"] = self.input_signal_ema
         return population_signals_from_activation(net, scores)
+
+    def refresh_neighbors(
+        self,
+        net: DynamicMLPReasoningNet,
+        layer_acts: dict[str, Tensor] | None = None,
+        *,
+        apply_stability_response: bool = True,
+    ) -> dict[str, Any]:
+        """Recompute same-layer neighbor masks (once per plasticity cadence).
+
+        For ``neighbor_metric=feature``, ``layer_acts`` (probe post-acts) is
+        required. On ``NEIGHBORHOOD_UNSTABLE``, applies the pre-committed
+        EMA-signature response and refreshes once more when enabled.
+        """
+        res = self.neighbors.refresh(net, layer_acts=layer_acts)
+        if res.unstable and apply_stability_response:
+            self.neighbors.apply_stability_response()
+            # Re-refresh with EMA so the step does not run on an unstable graph.
+            res = self.neighbors.refresh(net, layer_acts=layer_acts)
+            res.notes.append("stability_response_applied_ema_re_refresh")
+        d = res.as_dict()
+        self.neighbor_refresh_log.append(d)
+        return d
 
     @torch.no_grad()
     def step(
@@ -252,10 +354,39 @@ class PlasticityOrchestrator:
             "h3": signals["h3"],
         }
         active = {h: net.active_mask(h).cpu() for h in HIDDEN_LAYERS}
+        cfg = self.config
+        log = StructureEventLog(step=step_idx, epoch=epoch)
+        log.self_cal_flags = dict(cfg.self_calibrate_flags())
+        log.neighbor_metric = str(cfg.neighbor_metric)
+        if self.neighbors.last_result is not None:
+            lr = self.neighbors.last_result
+            log.neighbor_mean_churn = float(lr.mean_churn)
+            log.neighbor_churn_by_layer = dict(lr.churn_by_layer)
+            log.neighbor_matched_k_by_layer = dict(lr.matched_k_by_layer)
+            log.neighbor_mean_count_by_layer = dict(lr.mean_count_by_layer)
+            log.neighbor_unstable = bool(lr.unstable or self.neighbors.unstable_ever)
+            log.neighbor_signature_ema_mu = float(self.neighbors.signature_ema_mu)
+        else:
+            log.neighbor_signature_ema_mu = float(self.neighbors.signature_ema_mu)
+
+        # --- Self-cal r*_ℓ (before pressure decisions) ---
+        if self.self_cal.flags.r_star:
+            if self.self_cal.rates is None or not self.self_cal.rates.warmed:
+                raise RuntimeError(
+                    "self_calibrate.r_star is ON but LayerRateTracker was not "
+                    "warm-started; call orch.warm_start_self_cal(...) after the "
+                    "one-epoch activation probe"
+                )
+            live_rates = self.self_cal.rates.update(hidden_signals, active)
+            # Keep policy + config in sync (contraction, newborn EMA seed).
+            policy.target_rates = dict(live_rates)
+            if hasattr(policy, "target_rate"):
+                policy.target_rate = sum(live_rates.values()) / len(live_rates)
+            self.config.target_rates = dict(live_rates)
+            log.r_star_live = dict(live_rates)
+
         policy.update(hidden_signals, active)
 
-        log = StructureEventLog(step=step_idx, epoch=epoch)
-        cfg = self.config
         trigger_mode = str(cfg.neuron_growth_trigger).strip().lower()
         log.neuron_growth_trigger = trigger_mode
         use_gated = trigger_mode in ("gated_novelty", "novelty", "gated")
@@ -279,6 +410,10 @@ class PlasticityOrchestrator:
             log.n_growth_pressure += ng
             log.n_contraction_pressure += nc
             log.n_active_hidden += int(a.sum())
+        if log.n_active_hidden > 0:
+            log.n_contraction_frac = float(log.n_contraction_pressure) / float(
+                log.n_active_hidden
+            )
 
         # --- (2) competitive edge prune (z-score / fraction; does not read τ) ---
         for layer in LINEAR_LAYERS:
@@ -299,15 +434,37 @@ class PlasticityOrchestrator:
                     log.edges_pruned_incentive_grown += 1
                     self.cumulative_pruned_incentive += 1
 
+        # Neuron z-scores once (neighborhood-local when neighbor graph is ready);
+        # optional self-cal prune cut.
+        neuron_z: dict[str, Tensor] = {}
+        for h in HIDDEN_LAYERS:
+            nmask = self.neighbors.get_mask(h)
+            neuron_z[h] = competitive_neuron_zscores(
+                net, h, signals, neighbor_mask=nmask
+            )
+        z_cut = float(cfg.prune_neuron_z)
+        if self.self_cal.flags.prune_cutoff:
+            if self.self_cal.prune is None or not self.self_cal.prune.warmed:
+                raise RuntimeError(
+                    "self_calibrate.prune_cutoff is ON but PruneCutoffTracker "
+                    "was not warm-started"
+                )
+            z_cut = float(
+                self.self_cal.prune.update(neuron_z, active)
+            )
+            log.prune_z_cut_live = z_cut
+        else:
+            log.prune_z_cut_live = z_cut
+
         # --- prune neurons (contraction pressure uses τ for Variant A) ---
         for h in HIDDEN_LAYERS:
-            z = competitive_neuron_zscores(net, h, signals)
+            z = neuron_z[h]
             for slot in select_neurons_to_prune(
                 net,
                 h,
                 z,
                 policy,
-                cfg.prune_neuron_z,
+                z_cut,
                 grace_steps=cfg.newborn_grace_steps,
             ):
                 try:
@@ -761,8 +918,13 @@ class PlasticityOrchestrator:
         elif mode == "center_whole":
             B = -mean_whole
         else:
-            # straddle midpoint between gap and non-gap clouds
+            # straddle midpoint between gap and non-gap clouds (live primary)
             B = -0.5 * (mean_gap + mean_nongap)
+            # Optional self-cal layer reference update / degenerate fallback
+            if self.self_cal.flags.straddle and self.self_cal.straddle is not None:
+                self.self_cal.straddle.update_from_birth(
+                    hidden_layer, mean_gap, mean_nongap
+                )
         with torch.no_grad():
             mod.bias[slot] = float(B)
         return float(B)

@@ -44,6 +44,10 @@ Thumbs.db
 results/**
 !results/.gitkeep
 !results/**/.gitkeep
+# Allow diagnostic indexes committed for navigation (not full run trees)
+!results/phase1a_diagnostics/
+results/phase1a_diagnostics/**
+!results/phase1a_diagnostics/README.md
 
 # Data downloads (repo-root only; do not ignore src/neuronca/data/)
 /data/
