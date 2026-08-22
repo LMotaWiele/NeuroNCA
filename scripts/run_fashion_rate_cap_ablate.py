@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Fashion-MNIST rate-cap ablate — final growth-side thrash lever.
-
-Product stack under Fashion-calibrated r*_ℓ; vary only
-``max_new_neurons_per_layer`` (default 4 → up to 12 births/ep across h1–h3).
-
-Caps tested (seed 0, 12 ep by default):
-  4  — product (full thrash baseline)
-  2  — half rate (≤6 births/ep)
-  1  — low rate  (≤3 births/ep)
-  0  — frozen growth (control; prune still on for product realism,
-      or use --no-prune-at-zero for pure freeze)
-
-Metrics: val swing stats, final/peak acc, total grown, active P trajectory.
-
-Usage:
-  python scripts/run_fashion_rate_cap_ablate.py
-  python scripts/run_fashion_rate_cap_ablate.py --caps 4,2,1,0 --epochs 12
-"""
+"""Fashion rate-cap ablate: vary only ``max_new_neurons_per_layer`` (cap=1 closed thrash)."""
 
 from __future__ import annotations
 

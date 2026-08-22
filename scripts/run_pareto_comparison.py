@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Run pre-registered Phase 1a Pareto comparison (fixed-topo grid + plastic arms).
-
-Loads results/phase1a_diagnostics/pareto_comparison_prereg.json, trains the
-shared fixed-topology size grid (seeds 0–2, 20 ep), scores:
-
-  PARETO_ACC_AT_COST_FIXED
-  PARETO_ACC_AT_COST_SLIDING
-
-and annotates SLIDING_VS_FIXED_ON_PARETO / NEAR_BOUNDARY_DELTA_UNCERTAIN.
-
-Usage:
-  python scripts/run_pareto_comparison.py
-  python scripts/run_pareto_comparison.py --skip-train   # score only if grid already run
-"""
+"""Phase 1a Pareto: fixed-topo size grid vs plastic arms (from pareto_comparison_prereg.json)."""
 
 from __future__ import annotations
 

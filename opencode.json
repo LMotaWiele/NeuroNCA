@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
+  "agent": {
+    "orchestrator": {
+      "mode": "primary"
+    },
+    "soa-agent": {
+      "mode": "subagent",
+      "hidden": true
+    },
+    "efficient-agent": {
+      "mode": "subagent",
+      "hidden": true
+    },
+    "low-agent": {
+      "mode": "subagent",
+      "hidden": true
+    }
+  },
+  "permission": {
+    "read": {
+      ".orchestrator/evidence/raw/**": "deny"
+    }
+  }
+}

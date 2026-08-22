@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""Fashion grow_only: trigger-mistarget + post-birth local-CE outcome.
-
-Re-applies the MNIST trigger-mistarget methodology to gated-novelty growth
-events under Fashion-calibrated r*, on the grow_only arm (growth is the thrash
-driver). Adds an outcome test MNIST's ceiling made pointless:
-
-  At each birth, store the trigger's gap_mask (locus samples). Over the next
-  few epochs, does mean CE on those samples fall, stay flat, or rise?
-
-Usage:
-  python scripts/run_fashion_growth_locus_validation.py
-  python scripts/run_fashion_growth_locus_validation.py --epochs 12 --seed 0
-"""
+"""Fashion grow_only: trigger locus vs post-birth local CE on the gap samples."""
 
 from __future__ import annotations
 

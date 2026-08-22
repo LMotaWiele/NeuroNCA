@@ -1,26 +1,8 @@
 #!/usr/bin/env python3
-"""Structure-snapshot example for Phase 1a visualization (validation demo).
+"""Demo: record and render one seed of the product stack (does not touch primaries).
 
-Single seed, gated novelty + gap_imprinted stack with production growth caps.
-Writes under::
-
-  results/phase1a_diagnostics/visualizations/example_seed0/
-
-**Semantics (read before interpreting the frames):**
-
-- Each snapshot is taken **after** that epoch's training pass **and** its
-  orchestrator step. ``epoch=0`` is therefore "state after the first plasticity
-  step," not the init topology.
-- Growth caps match product defaults (``max_new_neurons_per_layer=4`` → up to
-  12 births/epoch across h1–h3). Caps are **not** inflated for the demo.
-- ``max_steps_per_epoch`` is shortened only for wall-clock; it does not change
-  structure-rate caps. Expect a dense first-frame of gap-imprinted units when
-  the gated trigger fires at capacity — that is production-rate, not a
-  renderer stress-test.
-- Budget is long enough (default 10 ep) to exercise grace-period prunes so
-  the open red "pruned" marker is validated on real deaths, not just legend.
-
-Does not touch any frozen primary result.
+Frames are post-train + post-orchestrator; ``epoch=0`` is after the first
+plasticity step, not init topology.
 """
 
 from __future__ import annotations

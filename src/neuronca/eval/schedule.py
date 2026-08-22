@@ -1,10 +1,4 @@
-"""Evaluation snapshot schedules for stationary and task-shift conditions.
-
-Produces tags for:
-- stationary: early / mid / late (and optional step_frac)
-- task-shift switch boundary: late_a, switch_b0
-- dense lag: every lag_stride for lag_window_steps after first B optimizer step
-"""
+"""Snapshot schedules: stationary early/mid/late; task-shift late_a / switch_b0 / lag."""
 
 from __future__ import annotations
 
@@ -57,17 +51,7 @@ def stationary_snapshot_tags(
     include_step_frac: bool = False,
     total_steps: int | None = None,
 ) -> list[SnapshotSpec]:
-    """Stationary condition snapshots: early / mid / late.
-
-    | Tag   | When                        |
-    |-------|-----------------------------|
-    | early | end of epoch 1              |
-    | mid   | end of epoch epochs // 2    |
-    | late  | end of final epoch          |
-
-    Optionally add step_frac tags at {0.1, 0.25, 0.5, 0.75, 1.0} × T when
-    ``include_step_frac`` and ``total_steps`` are set.
-    """
+    """Stationary tags: early (ep 1), mid (ep//2), late (final); optional step_frac."""
     if epochs < 1:
         raise ValueError("epochs must be >= 1")
 
@@ -213,14 +197,7 @@ def task_shift_schedule(
     lag_stride: int = 25,
     include_a_early_mid: bool = True,
 ) -> EvalSchedule:
-    """Full task-shift evaluation schedule (A phase + switch + lag + B phase).
-
-    B-phase snapshots (design § Other B-phase snapshots):
-    - Dense lag: GT-1 every ``lag_stride`` for ``lag_window_steps``
-    - Coarse: ``mid_b`` / ``late_b`` with full GT (GT-1 + GT-2)
-    - Each B epoch end: GT-1 only, **unless** that epoch is also a coarse tag
-      (then full GT via ``mid_b`` / ``late_b`` only — no duplicate GT-1 tag)
-    """
+    """A-phase + switch + lag (GT-1) + B coarse (full GT). No duplicate epoch-end tags."""
     snaps: list[SnapshotSpec] = []
 
     if include_a_early_mid and epochs_a >= 1:

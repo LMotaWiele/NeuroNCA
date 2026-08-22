@@ -32,28 +32,17 @@ DEFAULT_TARGET_RATES: dict[str, float] = {
 
 @dataclass
 class PlasticityConfig:
-    """Pre-registered plasticity hyperparameters.
-
-    ``target_rates`` is per-layer r*_ℓ (preferred). Scalar ``target_rate`` is
-    accepted only as a broadcast fallback for tests; primary configs must set
-    per-layer rates from the probe.
-    """
+    """Plasticity hyperparameters. Product default ``neighbor_metric`` is grid."""
 
     radius: float = 0.35
-    # Neighbor definition for same-layer local rules (novelty + neuron competitive z).
-    # Experiment 1: grid (control) vs feature (treatment). Edge incentive still uses
-    # grid radius (cross-population placement); only get_neighbors-scope rules swap.
+    # Same-layer neighbors: grid (product) | feature (research flag).
     neighbor_metric: str = "grid"  # grid | feature
-    # Feature similarity: cosine (primary) | correlation (fallback)
-    neighbor_similarity: str = "cosine"
-    # None → auto-match k to mean grid-neighbor count each refresh.
-    neighbor_top_k: int | None = None
+    neighbor_similarity: str = "cosine"  # cosine | correlation
+    neighbor_top_k: int | None = None  # None → match mean grid-neighbor count
     neighbor_churn_bound: float = 0.5
-    # EMA on activation signatures (0 = instantaneous; stability response → 0.5).
-    neighbor_signature_ema_mu: float = 0.0
-    # Prefer per-layer map; empty → use target_rate scalar or DEFAULT_TARGET_RATES.
+    neighbor_signature_ema_mu: float = 0.0  # 0 = instantaneous signatures
     target_rates: dict[str, float] = field(default_factory=dict)
-    target_rate: float | None = None  # optional broadcast for tests only
+    target_rate: float | None = None  # test-only broadcast fallback
     tau: float = 0.05
     threshold_kind: str = "fixed"  # fixed | sliding
     mu: float = 0.999
@@ -63,54 +52,25 @@ class PlasticityConfig:
     max_new_neurons_per_layer: int = 4
     seed_edges_per_new_neuron: int = 4
     pressure_margin: float = 0.0
-    # Edge eligibility gate modes (standalone incentive path only):
-    #   neither_contraction (strict, plan default): ≥1 growth, 0 contraction
-    #   not_both_contraction (relaxed probe): ≥1 growth, not both endpoints contracting
+    # neither_contraction: ≥1 growth, 0 contraction; not_both_contraction is relaxed.
     edge_eligibility_mode: str = "neither_contraction"
-    # Newborn protection (pre-registered; addresses cold-start thrash):
-    # grace: min plasticity steps of age before contraction prune eligibility.
-    # Separate from reactivation cooldown (reuse of a free slot).
-    # MUST be >= newborn_birth_bias_steps so prune never judges while scaffold
-    # bias is still nonzero (measurement correctness, not leniency).
+    # Must be >= birth_bias_steps so prune never judges while scaffold is nonzero.
     newborn_grace_steps: int = 3
-    # Seed ActivationMagnitude neuron EMA at layer r*_ℓ (not 0) on grow.
     newborn_ema_init: str = "layer_target"  # layer_target | zero
-    # Temporary positive pre-act bias at birth (scaffold, not a Parameter).
-    # Linear decay to 0 over newborn_birth_bias_steps ages. Addresses dead-ReLU
-    # at birth without changing Kaiming weight init for the rest of the net.
+    # Temporary pre-act scaffold (not a Parameter); linear decay over bias_steps.
     newborn_birth_bias: float = 0.5
     newborn_birth_bias_steps: int = 3
-    # Birth weight init:
-    #   "kaiming"          — independent noise
-    #   "parent_perturbed" — copy growth-trigger unit's weights/edges + noise
-    #                        (clone of trigger locus — NOT gap content)
-    #   "gap_imprinted"    — incoming row from CE-excess (gap) sample pre-act
-    #                        residual direction; edges via seed path, not parent copy
-    newborn_weight_init: str = "kaiming"  # kaiming | parent_perturbed | gap_imprinted
-    # Relative noise on parent copy: w' = w * (1 + noise*N(0,1)) + noise*std(w)*N(0,1)
+    # kaiming | parent_perturbed (clone trigger) | gap_imprinted (product birth)
+    newborn_weight_init: str = "kaiming"
     newborn_parent_noise: float = 0.1
-    # Also copy parent's outgoing (presynaptic) column, not only incoming row.
     newborn_copy_outgoing: bool = True
-    # Place newborn near parent coord (small isotropic jitter) when parent-seeded.
     newborn_parent_coord_jitter: float = 0.05
-    # Critical-period analog: scale grads on newborn incident weights by this
-    # factor while age < grace_steps. 1.0 = off (same rule as adults).
-    # Distinct from grace (more time under same rule) and birth_bias (output scaffold).
-    newborn_lr_mult: float = 1.0
-    # Neuron growth trigger:
-    #   "activation"     — legacy act > r*_ℓ + τ (homeostatic growth_pressure)
-    #   "gated_novelty"  — novelty ∧ local CE excess on gap ∧ |N| ≥ k_min
-    # Contraction prune still uses homeostatic contraction pressure either way.
+    newborn_lr_mult: float = 1.0  # 1.0 = off; scales grads while age < grace
+    # activation = act > r*+τ; gated_novelty = novelty ∧ local CE ∧ |N|≥k_min
     neuron_growth_trigger: str = "activation"  # activation | gated_novelty
-    # Density floor for gated novelty (measured k_min=11; see phase1a_results).
     novelty_k_min: int = 11
-    # Rank / fire only units whose mean neighbor-max is in the bottom this
-    # fraction among density+CE-pass candidates (1.0 = all CE+density passers).
     novelty_rank_fraction: float = 1.0
-    # --- Self-calibrating constants (local running statistics) ---
-    # Product: r_star only (after warm-start probe). prune_cutoff / straddle are
-    # NOT SHIPPED (§4.5: no Fashion recovery beyond r_star; keep frozen z-cut
-    # and live per-birth straddle B). Defaults all False for MNIST configs.
+    # Product ships r_star only; prune_cutoff / straddle stay research flags.
     self_calibrate: dict[str, bool] = field(
         default_factory=lambda: {
             "r_star": False,
@@ -127,8 +87,7 @@ class PlasticityConfig:
     self_cal_prune_quantile: float = 0.1587
 
     def __post_init__(self) -> None:
-        # Correctness: contraction prune must not judge while the temporary
-        # birth-bias scaffold is still nonzero (see phase1a_preregistration).
+        # Invariant: prune must not judge while birth-bias scaffold is nonzero.
         if int(self.newborn_grace_steps) < int(self.newborn_birth_bias_steps):
             raise ValueError(
                 "newborn_grace_steps must be >= newborn_birth_bias_steps so "

@@ -1,21 +1,7 @@
 #!/usr/bin/env python3
 """Adaptation-cost runner (digit-split primary; frozen-continue baseline).
 
-Pre-registration: docs/adaptation_cost_preregistration.md
-                  results/phase1a_diagnostics/adaptation_cost/prereg.json
-
-Primary claim setup:
-  - Shift: digit-split (B2); B1 optional secondary
-  - Baseline: frozen_continue (weights keep training; no reset)
-  - Cost: wall-clock to t_star_sustained (epochs secondary)
-  - Recovery: t_star_sustained on B val acc (not first-crossing)
-  - Trough: min post-switch B acc
-
-Usage:
-  python scripts/run_adaptation_cost.py --smoke
-  python scripts/run_adaptation_cost.py --seeds 0 --epochs-a 10 --epochs-b 15
-  python scripts/run_adaptation_cost.py --shift digit_split --arms plastic,fixed_continue
-  python scripts/run_adaptation_cost.py --shift b1 --arms plastic,fixed_continue  # secondary
+Bars: ``docs/adaptation_cost_preregistration.md``.
 """
 
 from __future__ import annotations

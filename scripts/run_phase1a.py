@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 1a: structural plasticity experiment runner.
-
-Examples:
-  python scripts/run_phase1a.py --config configs/phase1a_fixed.yaml --smoke
-  python scripts/run_phase1a.py --config configs/phase1a_fixed.yaml --condition stationary --seeds 0
-  python scripts/run_phase1a.py --config configs/phase1a_sliding.yaml --condition both --seeds 0,1,2
-  python scripts/run_phase1a.py --baseline --config configs/phase1a_baseline_fixed_topo.yaml --smoke
-"""
+"""Phase 1a structural plasticity runner (fixed / sliding / baseline configs)."""
 
 from __future__ import annotations
 

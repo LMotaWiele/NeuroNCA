@@ -1,13 +1,6 @@
-"""Time-lag recovery analysis: first-crossing t*_abs and rho_rec.
+"""Time-lag recovery: first-crossing t*_abs and rho_rec (never max-in-window).
 
-Primary recovery (verdict) uses absolute first crossing of threshold 0.60.
-``rho_rec`` is ρ at the first crossing, or ρ at the window end if none —
-**never** max-in-window. Relative recovery (0.9 * rho_pre_switch) is secondary.
-
-Diagnostic (not a pass/fail gate): ``t_star_sustained`` is the first lag time
-after which ρ stays at/above threshold for **all** subsequent logged points
-through the window end — distinguishing one-shot frozen-weight coincidences
-from recovery that holds.
+``t_star_sustained`` is diagnostic only (ρ stays ≥ threshold through window end).
 """
 
 from __future__ import annotations

@@ -1,28 +1,5 @@
 #!/usr/bin/env python3
-"""Profile one full-GT snapshot to locate time (before any rewrite).
-
-Measures a *real* ``InstrumentedTrainer.snapshot`` with the same GT suite used
-in production stationary coarse tags (``grad_abs`` + ``ablation_relu``).
-
-Outputs
--------
-- Wall-clock sectional timers (train warm-up, freeze, grad GT, ablation GT,
-  full snapshot, isolation assert, GEVB alignment).
-- cProfile top cumulative / tottime functions.
-- ``torch.profiler`` CPU table (and CUDA if available).
-- Micro-benchmarks: bare ``mean_probe_loss``, hook register/remove loop,
-  extrapolated neuron/edge ablation counts.
-
-Usage
------
-::
-
-    python scripts/profile_gt_snapshot.py
-    python scripts/profile_gt_snapshot.py --device cuda --probe-size 1024
-    python scripts/profile_gt_snapshot.py --skip-full-ablation  # grad-only micro
-
-Does **not** change production code or thresholds.
-"""
+"""Profile one production-shaped GT snapshot (timers + cProfile). Does not change thresholds."""
 
 from __future__ import annotations
 

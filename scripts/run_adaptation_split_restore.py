@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Split→restore retention test (decisive harder adaptation cell).
-
-Protocol: A=digits 0–4 → B=digits 5–9 → C=restore 0–4.
-Primary metric: task-A accuracy after B (retention under interference).
-Prereg: docs/adaptation_cost_split_restore_prereg.md
-
-Usage:
-  python scripts/run_adaptation_split_restore.py --smoke
-  python scripts/run_adaptation_split_restore.py --seeds 0,1,2
-"""
+"""Split→restore retention: A (0–4) → B (5–9) → restore A. Prereg: docs/adaptation_cost_split_restore_prereg.md."""
 
 from __future__ import annotations
 

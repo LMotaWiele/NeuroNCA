@@ -1,20 +1,7 @@
-"""Task-shift condition experiment runner with ordered A→B GT boundary and lag.
+"""Task-shift runner: A→B switch snapshots, then lag GT-1 after the first B step.
 
-Mandatory ordered switch procedure
-----------------------------------
-1. Train on Task A to ``late_a``.
-2. Snapshot ``late_a``: transform A, full GT → ``I_pre``, ``rho_pre_switch``.
-3. Atomic ``TaskContext.set_transform(B)`` (train + probe share context).
-4. Snapshot ``switch_b0``: transform B, **same weights**, **no** optimizer step,
-   full GT → ``I_immediate_post``.
-5. ``gt_shift_disagreement`` = Spearman(``I_pre``, ``I_immediate_post``) edge overall
-   (GT-1 ``grad_abs``).
-6. First B train step; lag ``t=0`` **after** that first B optimizer step.
-7. Dense lag every ``lag_stride`` for ``lag_window_steps``: **GT-1 only**.
-8. Write ``time_lag.csv``, ``correlations.csv``, ``summary.json`` under
-   ``task_shift/seed_k/``.
-
-Does **not** implement the stationary condition (see ``stationary.py``).
+Drain loaders before ``set_transform``; ``switch_b0`` is same-weights, no
+optimizer step. Stationary lives in ``stationary.py``.
 """
 
 from __future__ import annotations

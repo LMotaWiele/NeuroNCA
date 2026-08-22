@@ -1,41 +1,5 @@
 #!/usr/bin/env python3
-"""Spatial coherence of specialization — re-slice of existing structure snapshots.
-
-Go/no-go for a regional-consolidation mechanism:
-
-  Do neighboring neurons (within sensing radius R) share specialization
-  *more* than distant ones?
-
-If specialization is already spatially coherent, "regions" are a latent
-structure worth acting on. If it is spatially random, a regional mechanism
-would impose structure that is not there.
-
-This is **not** a new training run. It re-slices:
-  results/phase1a_diagnostics/gap_imprint_survival_20ep_hold/seed_0/structure_snapshots/
-  (+ unit rows from seed_*.json for stays-specialized flags where available)
-
-Metrics (all pre-declared here):
-  1. Neighbor vs distant mean |Δ| on gap_over_whole and on_off among
-     specialization-tracked units (grown gap_imprinted specialists).
-  2. Moran's I (binary adjacency d ≤ R) on those scalars.
-  3. Confound: exclude parent↔child pairs (birth places children near parents
-     with jitter — engineered locality, not organic regions).
-  4. Binary specialist density: among *all* active neurons with coords, do
-     stays_specialized (or tracked-spec) units cluster vs permutation null?
-  5. Null: coordinate-preserving permutation of specialization labels (200×).
-
-Verdict rule (honest, not a soft threshold thrash):
-  - SPATIALLY_COHERENT (full build GO) only if ≥2 layers show signature
-    coherence (near≪far |Δ| and/or Moran I, p≤0.05, parent-child excluded)
-    AND stays_specialized units also cluster spatially.
-  - MIXED_LAYER_DEPENDENT if some layers show signature coherence but
-    stays specialists do not form regions (or only 1 layer) → no full build.
-  - SPATIALLY_RANDOM if no layer passes after confound controls.
-
-Usage:
-  python scripts/analyze_specialization_spatial_coherence.py
-  python scripts/analyze_specialization_spatial_coherence.py --radius 0.35 --n-perm 200
-"""
+"""Re-slice structure snapshots: do neighbors share specialization more than distant units?"""
 
 from __future__ import annotations
 

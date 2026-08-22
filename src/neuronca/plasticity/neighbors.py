@@ -1,18 +1,7 @@
-"""Neighbor definitions for local plasticity rules.
+"""Same-layer neighbors for local plasticity rules: ``grid`` (default) or ``feature``.
 
-Single-variable swap for Experiment 1 (feature-space neighborhoods):
-
-  * ``grid``    — Euclidean unit-square distance within radius R (control)
-  * ``feature`` — top-k cosine similarity of probe activation signatures
-
-Both arms draw neighbors from the **same layer** (same candidate pool /
-adjacency scope). Matched-k for feature is set to the mean grid-neighbor
-count under R on the current active population so neighborhood *size* does
-not confound the metric comparison.
-
-Refresh cadence is once per plasticity step (epoch) by default. Neighbor
-churn is logged; if mean churn exceeds the bound, the pre-committed
-stability response is EMA-smoothed signatures and/or slower refresh.
+Product default is grid. Feature is a research flag (Exp 1 did not promote it).
+See ``docs/design/invariants.md``.
 """
 
 from __future__ import annotations

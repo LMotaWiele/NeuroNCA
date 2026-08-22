@@ -1,21 +1,6 @@
-"""Candidate 4 — GEVB-faithful vector eligibility with fixed random feedback.
+"""GEVB-RF eligibility: fixed random ``B_ell`` maps residuals; scores are |EMA T_ij|.
 
-Name: ``eligibility_gevb_rf``.
-
-Owns fixed feedback matrices ``B_ell`` (not the broadcast encoder):
-
-    rng_seed = hash(experiment.seed, gevb_feedback.seed, "gevb_B")
-    B_ell ~ N(0, (init_scale / sqrt(C))^2) shaped [n_out, C]
-    (gaussian_scaled, not trained; default init_scale=1 → std = 1/sqrt(C))
-
-    δ_j^{(b)} = (B_ell r_b)_j
-    δ_ij = mean_b a_i δ_j
-    T_ij <- λ T_ij + (1-λ) δ_ij
-    s_ij = |T_ij|
-
-Neuron score: mean abs incoming |T_ij|.
-
-Optional persistence: ``meta/gevb_B_seed{k}.pt`` (load if present, else save).
+Owns ``B_ell`` (not the broadcast encoder). Optional persist under ``meta/``.
 """
 
 from __future__ import annotations

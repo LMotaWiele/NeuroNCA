@@ -1,11 +1,4 @@
-"""Snapshot isolation: local signal traces must not change across GT-only calls.
-
-Design contract (Evaluation Schedule / Implementation Notes):
-- After train steps, capture T = eligibility edge scores / internal traces.
-- Run full GT compute path with signals disabled.
-- Assert T bitwise-equal after.
-- Optionally assert GT does not call ``LocalSignal.update`` (mock).
-"""
+"""Snapshot isolation: signal traces must be bitwise-equal across GT-only calls."""
 
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# code-review-graph local DB / cache
+.code-review-graph/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -29,6 +32,9 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Node (if used)
+node_modules/
+
 # IDE / editor
 .idea/
 .vscode/
@@ -41,6 +47,7 @@ htmlcov/
 Thumbs.db
 
 # Experiment results (keep directory via results/.gitkeep)
+# Do not blanket-ignore the whole results/ tree — keepers below are tracked.
 results/**
 !results/.gitkeep
 !results/**/.gitkeep

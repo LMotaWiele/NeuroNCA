@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""20-epoch hold of establish + stays-specialized under the locked full stack.
-
-Official recipe (configs/phase1a_fixed.yaml knobs):
-  fixed threshold + gated_novelty (k_min=11) + gap_imprinted
-  (sep-power / open-fan / straddle) + competitive prune + grace=3.
-
-Also records structure snapshots (seed 0 by default) and renders static +
-animation for the full 20-epoch sequence.
-
-Usage:
-  python scripts/run_20ep_hold.py --seeds 0,1,2
-  python scripts/run_20ep_hold.py --seeds 0 --no-viz
-
-Artifacts:
-  results/phase1a_diagnostics/gap_imprint_survival_20ep_hold/
-    summary.json
-    seed_*.json
-    seed_0/structure_snapshots/
-    visualizations/
-"""
+"""20-epoch hold of establish + stays-specialized on the locked product stack."""
 
 from __future__ import annotations
 

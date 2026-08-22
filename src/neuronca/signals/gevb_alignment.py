@@ -1,36 +1,8 @@
-"""GEVB / feedback-alignment diagnostics: is B_ℓ still unaligned with the forward path?
+"""FA alignment diagnostics for GEVB-RF: is B_ℓ still unaligned with ∂L/∂z?
 
-Background
-----------
-Candidate 4 uses fixed random feedback ``B_ℓ ∈ R^{n_out × C}``. Classic FA
-theory predicts the *teaching signal* ``δ_fa = B r`` only becomes a good
-proxy for true backprop credit after the forward weights rotate into
-alignment with that fixed backward map. Low Spearman for GEVB-RF at a late
-snapshot can therefore mean either:
-
-1. Alignment has not converged yet (explainable; longer training / scale fix), or
-2. Alignment has converged and the proxy still fails (more serious).
-
-``W_ℓ`` is ``[n_out, n_in]`` and ``B_ℓ`` is ``[n_out, C]`` — different trailing
-dimensions — so a Frobenius angle between the raw matrices is ill-posed.
-We report two *compatible* metrics that live in the shared postsynaptic
-space ``R^{n_out}``:
-
-**fa_signal_angle_deg** (primary, FA literature)
-    Mean over probe of the geometric angle between the teaching signal
-    ``B_ℓ r`` and the true backprop sensitivity ``∂L/∂z_ℓ`` (linear
-    pre-activation of layer ℓ). Range ``[0, 180]``: 0° = perfect signed
-    alignment, 90° = orthogonal, 180° = anti-aligned (sign flip).
-
-**subspace_principal_angle_deg** (secondary, geometric)
-    Smallest principal angle between ``col(B_ℓ)`` and the top-``k`` left
-    singular subspace of ``W_ℓ`` (``k = min(C, rank(W), n_out)``).
-
-    Direct ``col(W)`` vs ``col(B)`` is *vacuous* when ``n_in ≥ n_out`` (then
-    ``col(W)`` typically fills ``R^{n_out}`` and every feedback direction is
-    inside it → angle 0). Comparing B to the *dominant* forward left-singular
-    directions asks: does fixed random feedback sit in the same activation
-    subspace the forward map is using?
+Primary: probe-mean angle between ``B r`` and ``∂L/∂z_ℓ``. Secondary: principal
+angle of ``col(B)`` vs the top-k left-singular subspace of ``W`` (raw Frobenius
+W-vs-B is ill-posed). Low late Spearman is uninterpretable while FA is stalled.
 """
 
 from __future__ import annotations

@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 0 multi-seed orchestration CLI.
-
-Runs stationary and/or task_shift across seeds, then writes
-``{results_root}/aggregate/verdict.json`` **only** via
-:func:`neuronca.eval.verdict.aggregate_verdict` and
-:func:`neuronca.io.artifacts.write_verdict_json`.
-
-Examples
---------
-::
-
-    python scripts/run_phase0.py --config configs/default.yaml
-    python scripts/run_phase0.py --config configs/task_shift.yaml --condition task_shift
-    python scripts/run_phase0.py --config configs/default.yaml --smoke
-    python scripts/run_phase0.py --config configs/default.yaml --seeds 0,1,2 \\
-        --results-root results/phase0 --condition both
-"""
+"""Phase 0 CLI: stationary and/or task_shift, then ``aggregate/verdict.json``."""
 
 from __future__ import annotations
 

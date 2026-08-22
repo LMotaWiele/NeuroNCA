@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Render Phase 1a structure snapshots (static figure or multi-epoch animation).
-
-Expects full-state dumps from ``record_structure_snapshots: true`` under a
-results root (``structure_snapshots/epXXXX_*.json``). Does not reconstruct
-topology from aggregate ``structure_timeseries.csv``.
-
-Examples:
-  python scripts/visualize_structure.py \\
-      --results results/phase1a_diagnostics/visualizations/example_seed0 \\
-      --tag late -o results/phase1a_diagnostics/visualizations/late.png
-
-  python scripts/visualize_structure.py \\
-      --results results/phase1a_diagnostics/visualizations/example_seed0 \\
-      --animate -o results/phase1a_diagnostics/visualizations/structure.gif
-"""
+"""Render structure snapshots (needs ``record_structure_snapshots: true`` dumps)."""
 
 from __future__ import annotations
 

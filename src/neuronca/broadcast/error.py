@@ -1,16 +1,7 @@
-"""Broadcast error encoder: per-sample residual packet + residual-energy modulator.
+"""Broadcast residual packet for local signals (per-sample energy / vectors).
 
-Encoder produces residual-only quantities for local importance signals:
-
-- Path A (candidates 2–3): per-sample residual energy ``e_s^{(b)} = ||r_b||_2``
-- Path B (candidate 4): full residual vectors ``r_per_sample``
-
-Does **not** construct GEVB feedback matrices ``B_ell`` (owned by signals).
-
-Batch-mean residual / energy is diagnostic only and must never be used as the
-eligibility modulator — that collapses three-factor structure to a scalar times
-mean co-activation. Use :meth:`BroadcastPacket.eligibility_energy_modulator`
-(per-sample) instead of :func:`batch_mean_residual_as_eligibility_modulator`.
+Does not own GEVB ``B_ell``. Batch-mean residual is diagnostic only — never
+the eligibility modulator (use ``e_s_per_sample``).
 """
 
 from __future__ import annotations
@@ -24,22 +15,9 @@ from torch import Tensor
 
 @dataclass
 class BroadcastPacket:
-    """Global broadcast residual packet for one training step.
+    """One-step residual packet: per-sample energy ``[B]``, residuals ``[B, C]``.
 
-    Attributes
-    ----------
-    e_scalar_ce:
-        Mean cross-entropy loss for the batch (diagnostic).
-    e_vec_mean:
-        Batch-mean residual vector ``mean_b r_b`` of shape ``[C]`` (diagnostic only).
-    e_s_per_sample:
-        Per-sample residual energy ``||r_b||_2`` of shape ``[B]`` — default
-        scalar neuromodulator for candidates 2 and 3.
-    r_per_sample:
-        Full residuals ``r_b = softmax(z_b) - one_hot(y_b)`` of shape ``[B, C]``
-        for candidate 4 (GEVB random feedback).
-    step:
-        Encoder step index (0-based, increments on each :meth:`BroadcastErrorEncoder.encode`).
+    ``e_vec_mean`` is diagnostic only; eligibility uses ``e_s_per_sample``.
     """
 
     e_scalar_ce: float
@@ -49,27 +27,12 @@ class BroadcastPacket:
     step: int
 
     def eligibility_energy_modulator(self) -> Tensor:
-        """Per-sample residual energy for candidates 2–3 (shape ``[B]``).
-
-        This is the only supported scalar eligibility modulator from this packet.
-        Do not use ``||e_vec_mean||_2`` or a batch-scalar substitute.
-        """
+        """Per-sample residual energy (the only supported eligibility modulator)."""
         return self.e_s_per_sample
 
 
 def batch_mean_residual_as_eligibility_modulator(packet: BroadcastPacket) -> Tensor:
-    """Reject misuse of batch-mean residual as an eligibility modulator.
-
-    Batch-mean ``e_vec_mean`` (or ``||e_vec_mean||_2``) is logged for diagnostics
-    only. Using it as a shared scalar with per-sample co-activations reduces the
-    three-factor update to ``e_s * mean(a_i a_j)`` and nullifies sample alignment.
-
-    Raises
-    ------
-    ValueError
-        Always — callers must use :meth:`BroadcastPacket.eligibility_energy_modulator`
-        / ``e_s_per_sample`` instead.
-    """
+    """Always raises: batch-mean residual is not an eligibility modulator."""
     raise ValueError(
         "Batch-mean residual/energy must not be used as eligibility modulator; "
         "use BroadcastPacket.e_s_per_sample (per-sample residual energy ||r_b||_2) "

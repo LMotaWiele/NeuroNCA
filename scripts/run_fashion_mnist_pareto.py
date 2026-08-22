@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""Fashion-MNIST dense slope scout + plastic Pareto (process lessons from MNIST).
-
-Process (built in from the start — not reactive follow-ups):
-
-1. **Wide dense grid** (not a naive port of MNIST tags) to find where Fashion-MNIST
-   still has slope, before locking a comparison grid.
-2. **Per-cell seed spread** reported immediately with the dense scout.
-3. Plastic fixed + sliding 20-ep holds on Fashion-MNIST under **Fashion-calibrated
-   r*_ℓ** (not MNIST's 0.77/1.02/1.28 — see fashion_mnist_calibration/).
-4. Score cost-matched Pareto with δ=1.0 pp, both arms, mid-horizon caveat.
-
-**Calibration required:** run ``scripts/run_fashion_mnist_calibration.py`` first
-(or rely on locked rates below from that probe). Prior plastic runs that reused
-MNIST target_rates are INVALID for product claims.
-
-Usage:
-  python scripts/run_fashion_mnist_pareto.py
-  python scripts/run_fashion_mnist_pareto.py --skip-dense   # reuse dense scout
-  python scripts/run_fashion_mnist_pareto.py --skip-plastic # score only
-"""
+"""Fashion-MNIST dense scout + plastic Pareto under Fashion-calibrated r*."""
 
 from __future__ import annotations
 

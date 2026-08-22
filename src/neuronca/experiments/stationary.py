@@ -1,11 +1,4 @@
-"""Stationary condition experiment runner.
-
-Wires config → MNIST + MLP + SGD + local signals + GT → InstrumentedTrainer
-with scheduled early/mid/late snapshots, then writes correlations.csv and
-summary.json under ``{results_root}/stationary/seed_{k}/``.
-
-Does **not** implement task-shift (see ``task_shift.py``).
-"""
+"""Stationary runner: train + scheduled snapshots → correlations under seed dirs."""
 
 from __future__ import annotations
 
@@ -98,17 +91,7 @@ def _config_for_ledger(
     results_root: Path,
     run_seed: int,
 ) -> dict[str, Any]:
-    """Build a **seed-invariant** config for primary ledger freeze.
-
-    Multi-seed Phase 0 layout is one shared ``{results_root}/meta/`` plus
-    per-seed artifact dirs ``stationary/seed_{k}/``. The content hash must
-    **not** include the per-run seed, or a second seed on the same root raises
-    :class:`~neuronca.io.ledger.LedgerConflictError`.
-
-    Top-level ``seed`` is left as in the shared experiment config (or the first
-    entry of ``experiment.seeds``). The per-run seed is applied only via
-    :func:`set_seed` and seed-dependent constructors after freeze.
-    """
+    """Seed-invariant config for the shared ``{results_root}/meta/`` freeze."""
     cfg = copy.deepcopy(dict(config))
     cfg.pop("smoke", None)
     exp = dict(cfg.get("experiment") or {})

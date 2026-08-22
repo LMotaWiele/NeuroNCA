@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Fashion-MNIST grow/prune 2×2 isolation under calibrated r*_ℓ.
-
-Arms (seed 0, default 12 epochs, same train recipe as mid-hold):
-
-  full        grow + prune   (product stack)
-  grow_only   grow, no prune
-  prune_only  prune, no grow
-  frozen      neither (control; should match fixed-topo smoothness)
-
-Fashion r* from calibration: (0.71, 0.80, 0.91).
-
-Usage:
-  python scripts/run_fashion_grow_prune_ablate.py
-  python scripts/run_fashion_grow_prune_ablate.py --epochs 12 --seeds 0
-"""
+"""Fashion grow/prune 2×2 (full / grow_only / prune_only / frozen) under calibrated r*."""
 
 from __future__ import annotations
 

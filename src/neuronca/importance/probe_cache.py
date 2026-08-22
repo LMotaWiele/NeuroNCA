@@ -1,15 +1,7 @@
 """Snapshot-scoped probe tensor cache for GT measures.
 
-Materializes the probe set once per snapshot (post-transform tensors) so
-ablation / gradient / Fisher do not re-run the DataLoader + torchvision
-pipeline for every unit. Scientific equivalence holds only when:
-
-1. The cache is built under the current :class:`~neuronca.data.tasks.TaskContext`
-   (``task_version`` matches at every use).
-2. The cache is **not** reused across ``set_transform`` / snapshot boundaries.
-3. Post-suite integrity confirms tensors were not mutated in-place during GT.
-
-See Phase 0 probe-cache implementation spec.
+Never reuse across ``set_transform`` / snapshot boundaries
+(``docs/design/invariants.md``).
 """
 
 from __future__ import annotations

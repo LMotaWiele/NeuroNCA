@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Primary Phase 1a specialization survival: fixed vs sliding under gap_imprinted.
-
-Stack (locked): gated novelty + gap_imprinted (sep-power edges, open-fan scale,
-straddle Parameter bias). Pre-registered longitudinal metrics in
-docs/phase1a_results.md.
-
-Usage:
-  python scripts/run_gap_imprint_survival.py --threshold fixed --seeds 0,1,2
-  python scripts/run_gap_imprint_survival.py --threshold sliding --seeds 0,1,2
-  python scripts/run_gap_imprint_survival.py --both --seeds 0,1,2
-"""
+"""Gap-imprint specialist survival (gated novelty + gap_imprinted; fixed vs sliding)."""
 
 from __future__ import annotations
 

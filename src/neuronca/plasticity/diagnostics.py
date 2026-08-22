@@ -124,16 +124,7 @@ def thrash_events(
     *,
     window: int = 3,
 ) -> dict[str, Any]:
-    """Count grow↔prune flip-flops on the same key within ``window`` consecutive epochs.
-
-    Pre-registered bar: annotate if neuron or edge thrash events exceed N=10
-    (docs/phase1a_preregistration.md stability bar item 4).
-
-    A thrash event is recorded when, for a given key, the ordered sequence of
-    actions over a sliding window of epochs contains both a grow and a prune
-    (in either order) — i.e. the same identity was both added and removed within
-    the window.
-    """
+    """Count grow↔prune flip-flops on the same key within ``window`` epochs."""
     if not history:
         return {
             "neuron_thrash_events": 0,

@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Experiment 1: Feature-space neighborhoods vs grid (pre-registered A/B).
-
-Single variable: PlasticityConfig.neighbor_metric ∈ {grid, feature}.
-
-Usage:
-  python scripts/run_feature_neighbors_ab.py --smoke
-  python scripts/run_feature_neighbors_ab.py --seeds 0,1,2 --epochs 20
-  python scripts/run_feature_neighbors_ab.py --arms grid,feature --seeds 0
-
-Prereg: docs/feature_neighbors_preregistration.md
-Results: results/phase1a_diagnostics/feature_neighbors_ab/
-"""
+"""A/B: ``neighbor_metric`` grid vs feature. Prereg: ``docs/feature_neighbors_preregistration.md``."""
 
 from __future__ import annotations
 

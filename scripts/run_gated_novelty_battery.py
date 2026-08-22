@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""Post-implementation battery for gated-novelty growth (Phase 1a).
-
-Pairs (default):
-  neuron_growth_trigger = gated_novelty
-  newborn_weight_init   = gap_imprinted  (CE-excess residual pre-act direction)
-  threshold_kind        = fixed | sliding  (Variant A shared r* vs Variant B own-history)
-
-Battery:
-  1) Dead-ReLU-at-birth
-  2) Specialist profile: act on own gap samples vs whole probe (before prune)
-  3) Redundancy / divergence (cos trigger vs cos gap dir)
-  4) Own-subset vs whole-probe pruning re-check
-  5) Establishment under fixed vs sliding
-
-Usage:
-  python scripts/run_gated_novelty_battery.py --threshold fixed
-  python scripts/run_gated_novelty_battery.py --threshold sliding
-  python scripts/run_gated_novelty_battery.py --weight-init parent_perturbed
-"""
+"""Gated-novelty + gap-imprint battery (dead-ReLU, specialist, establishment)."""
 
 from __future__ import annotations
 

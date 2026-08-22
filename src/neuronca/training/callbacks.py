@@ -1,26 +1,8 @@
-"""Instrumented training callbacks with hard snapshot isolation.
+"""Instrumented trainer: observe local signals; never feed them to loss.
 
-Train-step protocol
--------------------
-On each TRAIN step:
-
-1. Forward (activations collected on the model).
-2. ``BroadcastErrorEncoder.encode`` → residual packet.
-3. ``LocalSignal.update`` for each candidate (under ``no_grad``; never
-   contributes to loss / optimizer).
-4. Normal backprop: ``loss.backward()`` + ``optimizer.step()``.
-
-Snapshot isolation protocol
----------------------------
-On SNAPSHOT:
-
-1. Freeze / copy local scores via ``snapshot_scores`` under ``no_grad``.
-2. Run all GT measures with signals **disabled** (no ``LocalSignal.update``
-   on probe forwards — GT modules must not call update; this module also
-   flips an enable flag so instrumented hooks stay inert).
-3. Resume training (re-enable signal updates).
-
-Hard rule: trace tensors are bitwise-identical before and after a GT-only call.
+Train step: forward → broadcast packet → signal update (if enabled) → backprop.
+Snapshot: freeze scores → GT with signals off + RNG restore. See
+``docs/design/invariants.md``.
 """
 
 from __future__ import annotations
@@ -405,37 +387,11 @@ class InstrumentedTrainer:
         verify_probe_cache: bool = True,
         isolate_training_rng: bool = True,
     ) -> dict[str, ImportanceResult]:
-        """(2) Run GT suite with signals disabled.
+        """Run GT with signals disabled, snapshot-scoped probe cache, RNG restore.
 
-        Does not call ``LocalSignal.update``. Uses :meth:`signals_disabled` so
-        any accidental instrumented hook is inert during probe forwards.
-
-        Snapshot-scoped probe cache
-        ---------------------------
-        Materializes the probe set once under the current TaskContext version
-        and passes the same :class:`~neuronca.importance.probe_cache.ProbeCache`
-        to every GT measure. The cache is never reused across ``run_gt`` /
-        ``snapshot`` calls. When ``verify_probe_cache`` is True (default),
-        re-materializes from ``probe_loader`` after the suite and asserts
-        bit-equality with the cache (corruption guard).
-
-        Training RNG isolation (always on by default)
-        ---------------------------------------------
-        Captures ``torch.get_rng_state()`` (and CUDA RNG when present) before
-        GT and restores it after, then asserts equality. Closes the class of
-        bugs where GT-internal ``DataLoader`` iterator creation (or any future
-        sampling) advances the global RNG and silently reorders subsequent
-        shuffled training batches. Same "cheap, always-on production guard"
-        posture as signal-trace isolation and probe-cache integrity.
-
-        Pre-patch historical note: frozen B1/B3 primary results under
-        ``results/historical/pre_patch_rng_isolation/`` were collected
-        *without* this bracket. Under that regime, GT probe iteration count
-        (driven by edge-sample size and neuron ablation unit count) advanced
-        the global CPU RNG and thus coupled into post-snapshot train shuffle
-        order. Those archives remain valid for their fixed config; they are
-        not bit-comparable to post-patch runs or to re-runs with a different
-        ``edge_ablation_sample``.
+        Probe cache is never reused across calls. Default ``isolate_training_rng``
+        saves/restores torch RNG so GT cannot reorder later train batches.
+        See ``docs/design/invariants.md``.
         """
         from neuronca.importance.probe_cache import (
             assert_probe_cache_matches_loader,
@@ -488,24 +444,7 @@ class InstrumentedTrainer:
         verify_probe_cache: bool = True,
         isolate_training_rng: bool = True,
     ) -> SnapshotResult:
-        """Full snapshot protocol: freeze → GT (signals off) → resume.
-
-        Args:
-            gt_measures: GT modules to run (e.g. ``GradientSaliency``).
-            probe_loader: Current-task probe DataLoader (source of truth for
-                materializing the snapshot-scoped probe cache).
-            edge_sample_mask: Optional fixed mask for sparse GT-2.
-            criterion: Loss for GT; defaults to trainer criterion.
-            check_isolation: If True, assert traces bitwise-identical across GT.
-            verify_probe_cache: If True (default), after GT assert the
-                snapshot probe cache still matches a fresh loader pass.
-            isolate_training_rng: If True (default), bracket GT with torch
-                RNG save/restore + equality assert so GT cannot perturb
-                subsequent training shuffle order.
-
-        Returns:
-            :class:`SnapshotResult` with frozen scores and GT maps.
-        """
+        """Freeze local scores, run GT (signals off), assert traces unchanged."""
         # Capture traces before GT when isolation-checking.
         pre_traces: list[dict[str, Any]] | None = None
         if check_isolation:

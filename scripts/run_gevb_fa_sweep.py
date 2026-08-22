@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""GEVB-RF FA diagnostic sweep (Phase 0 refinement).
-
-Grid: lr ∈ {0.001, 0.01, 0.05} × B_ℓ init_scale ∈ {0.1, 1.0, 10.0} of default
-std (= 1/sqrt(C)), 3 seeds, stationary 20 epochs. Secondary: epochs=40 at
-defaults only.
-
-Pre-registered interpretation: see module docstring at bottom / results README.
-Does not modify frozen B1/B3 archives or threshold files.
-"""
+"""GEVB-RF FA diagnostic sweep (lr × B_ℓ scale). Does not modify frozen archives."""
 
 from __future__ import annotations
 

@@ -6,11 +6,12 @@ observed alongside training and, in Phase 1a, drive **homeostatic grow/prune** o
 hidden neurons and adjacent edges (never a topology optimizer over multi-hop
 graphs).
 
-## Project status: **CLOSED**
+The in-scope chapters in this repository are **closed**. Findings below are the
+bounded, publishable conclusions — not an open research roadmap.
 
-All pre-registered chapters that were in scope for this repository are finished.
-Findings below are the bounded, publishable conclusions — not an open research
-roadmap inside this tree.
+Package: `src/neuronca/` · layout rules: `AGENTS.md`.
+
+## Project status: **CLOSED**
 
 | Chapter | Status | Headline |
 |---------|--------|----------|
@@ -28,7 +29,7 @@ roadmap inside this tree.
 
 - Phase 1a: [`docs/phase1a_results.md`](docs/phase1a_results.md) · [`docs/phase1a_preregistration.md`](docs/phase1a_preregistration.md)
 - Phase 0: [`docs/phase0_results.md`](docs/phase0_results.md) · [`docs/phase0_consolidated_results.md`](docs/phase0_consolidated_results.md)
-- Design (historical): [`docs/design/phase1_design_document.md`](docs/design/phase1_design_document.md)
+- Design: [`docs/design/phase1_design_document.md`](docs/design/phase1_design_document.md) · [`docs/design/invariants.md`](docs/design/invariants.md)
 
 ---
 
@@ -85,16 +86,15 @@ remain available as a research flag only; Exp 1 did not promote them.
 
 ---
 
-## Install
+## Setup
+
+Python >= 3.12. PyTorch >= 2.1. CUDA optional (CPU works; full GT is slow).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+source .venv/bin/activate
+pip install -e '.[dev]'
 pytest
 ```
-
-Requires **Python ≥ 3.10**, PyTorch ≥ 2.1. CUDA optional (CPU works; full GT is slow).
 
 ---
 
@@ -166,10 +166,10 @@ Diagnostic index: [`docs/phase1a_diagnostics_index.md`](docs/phase1a_diagnostics
 
 ---
 
-## Package layout
+## Package
 
 ```
-configs/                 # Phase 0 + Phase 1a YAMLs
+configs/                 # Phase 0 + Phase 1a YAMLs (top-level by design)
 src/neuronca/
   models/                # MLP + DynamicMLP (masks, coords, birth provenance)
   data/                  # MNIST / Fashion-MNIST / KMNIST, TaskContext, shifts
@@ -180,11 +180,15 @@ src/neuronca/
   experiments/           # stationary + task_shift runners
   eval/                  # correlations, lag recovery, verdict
   io/                    # config, ledger, artifacts, seed
-scripts/                 # runners + analyzers (see table below)
-docs/                    # preregs + results write-ups
-tests/
-results/                 # local experiment trees (gitignored except keepers)
+scripts/                 # campaign runners + analyzers
+docs/                    # preregs, results write-ups, design
+tests/                   # flat test_<topic>.py
+data/                    # dataset downloads
+results/                 # experiment trees (do not rename)
 ```
+
+Layout rationale: [`docs/design/layout.md`](docs/design/layout.md).
+Snapshot / ledger / RNG contracts: [`docs/design/invariants.md`](docs/design/invariants.md).
 
 ### Scripts (by chapter)
 
@@ -218,22 +222,6 @@ results/                 # local experiment trees (gitignored except keepers)
 
 ---
 
-## Engineering contracts
-
-| Contract | Where |
-|----------|--------|
-| Signals **disabled** during GT (no EMA updates) | `InstrumentedTrainer` / `signals_disabled` |
-| Training RNG save/restore around GT | `run_gt(isolate_training_rng=True)` |
-| Plasticity: local signals only (no labels/grads in rules) | `plasticity/orchestrator.py` |
-| Structure snapshots opt-in (default off) | `experiment.record_structure_snapshots` |
-| Ledger freezes config content hash + thresholds | `io/ledger.py` |
-| Neighbor metric flag (default `grid`) | `PlasticityConfig.neighbor_metric` |
-
-Changing signal, GT, or product-stack code after a freeze → **new experiment id**,
-new results root.
-
----
-
 ## What this repo is *not* claiming
 
 - Plasticity as a general continual-learning win on these digit tasks
@@ -242,12 +230,13 @@ new results root.
 - That feature-space neighbors improve the locked stack without regression
 - Phase 1b relay / 1c scaffolding (never opened)
 
-Optional polish left on the floor (not required to close science): multi-seed
-Fashion cap=1 Pareto under self-cal r\*; longer-horizon specialist equilibrium
-checks; packaging results for a paper figure set.
+## Docs
+
+Write-ups and preregs live under [`docs/`](docs/). Design and invariants under
+[`docs/design/`](docs/design/). Optional figure packaging is out of scope here.
 
 ---
 
 ## License
 
-Research prototype; no license asserted yet.
+Apache License 2.0. See [`LICENSE`](LICENSE).

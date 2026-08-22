@@ -40,14 +40,7 @@ class LabelPermutationTransform:
 
 
 class DigitSplitTransform:
-    """Task B2: remap labels in [low, high] to 0..K-1 (digit-range split).
-
-    This transform only remaps labels. Callers **must** restrict the dataset to
-    indices whose raw labels lie in ``[low, high]`` (see
-    :func:`indices_in_digit_range`). Applying this transform to unfiltered MNIST
-    raises ``ValueError`` for out-of-range labels so misuse fails loudly rather
-    than producing negative CE targets.
-    """
+    """B2: remap labels in [low, high] to 0..K-1. Filter the dataset first."""
 
     def __init__(self, low: int = 5, high: int = 9) -> None:
         if low > high:
@@ -114,29 +107,11 @@ class PixelPermutationTransform:
 
 
 class TaskContext:
-    """Single active transform; train_loader and probe_loader both read this.
+    """Shared active transform for train and probe views.
 
-    Atomicity contract
-    ------------------
-    ``set_transform`` is a single in-process attribute assignment. Train and
-    probe ``TaskAwareDataset`` instances share this object and re-read
-    ``transform`` on every ``__getitem__``, so with ``num_workers=0`` a flip is
-    immediately visible to both views.
-
-    With ``DataLoader(num_workers > 0)``, worker processes hold a forked copy of
-    the context and **do not** see a mid-lifetime assignment. Required protocol
-    at an A→B switch (matches design switch-boundary sequencing):
-
-    1. Drain / finish all active loader iterators (do not flip mid-epoch while
-       workers are serving batches).
-    2. Do not use ``persistent_workers=True`` across the A→B boundary (or
-       rebuild loaders after the flip so workers respawn).
-    3. Prefer ``num_workers=0`` for probe/GT loaders at the switch, or recreate
-       workers after ``set_transform``.
-
-    A fresh full iteration after the flip with non-persistent workers does pick
-    up the new transform. Optional ``version`` counter increments on each flip
-    for debugging train/probe mismatches.
+    ``set_transform`` is in-process only. With ``num_workers>0``, drain iterators
+    and rebuild loaders at A→B — workers will not see a mid-lifetime assignment.
+    See ``docs/design/invariants.md``.
     """
 
     def __init__(self, transform: TaskTransform | None = None) -> None:

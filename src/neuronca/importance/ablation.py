@@ -1,31 +1,7 @@
-"""GT-2: ablation sensitivity with ``ablation_relu`` ranking transform.
+"""GT-2: ablation sensitivity; ranking is ``max(0, L_ablate - L_base)``.
 
-Primary ranking transform (pre-registered)::
-
-    I^{abl+}_j = max(0, L_ablate - L_base)
-
-Signed ΔL is logged under extras key ``ablation_signed`` as nested maps
-``{"neuron": {fc*: [n_out]}, "edge": {fc*: [n_out, n_in]}}`` (no key collision).
-
-Neuron ablation covers hidden posts (default ``fc1,fc2,fc3``). Connection
-ablation uses a **fixed** per-seed edge mask (default 512 edges/layer,
-stratified by |W| bins) so lag / multi-snapshot series stay comparable.
-
-Historical note (pre training-RNG isolation)
---------------------------------------------
-Before ``InstrumentedTrainer.run_gt`` began bracketing GT with
-``torch.get_rng_state()`` save/restore, each probe ``DataLoader`` iterator
-created inside per-unit ablation advanced the **global** CPU RNG. That meant
-``edge_ablation_sample`` (and neuron-unit count) was **coupled to subsequent
-training shuffle order**: changing the sample size changed how many times the
-probe loader was re-iterated, which shifted the train-stream RNG and produced
-a different multi-epoch trajectory — even with identical seeds and edge masks.
-
-Frozen Phase 0 B1/B3 primary runs were collected under that pre-patch regime
-(leakage constant within each experiment). Do **not** expect bit-reproduction
-of those numbers with a different ``edge_ablation_sample`` or with post-patch
-code that restores RNG after GT. See
-``results/historical/pre_patch_rng_isolation/README.md``.
+Edge mask is fixed per seed so lag series stay comparable. GT must not advance
+training RNG (``docs/design/invariants.md``).
 """
 
 from __future__ import annotations

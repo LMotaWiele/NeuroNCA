@@ -1,15 +1,7 @@
-"""Production snapshot-isolation guard.
+"""Live bitwise check that GT did not mutate signal traces.
 
-``signals_disabled()`` is the safety mechanism (always on during GT). The bitwise
-trace assertion is a **live verification** of that mechanism on the real run.
-
-Benchmarks on full MNIST-scale MLP + 4 candidates (CPU):
-  isolation capture+assert ≈ 3–4 ms
-  train step ≈ 3 ms
-  GT grad_abs snapshot ≈ 3 ms
-  ~300 snapshots × 3.3 ms ≈ **1 s** total per seed
-
-Cheap relative to a multi-hour Phase 0 run — default mode is therefore ``always``.
+``signals_disabled()`` is the safety mechanism; this guard is the verification.
+Default ``always`` — cheap vs a full Phase 0 run. See ``docs/design/invariants.md``.
 """
 
 from __future__ import annotations
@@ -43,18 +35,7 @@ def parse_isolation_mode(value: object, *, default: IsolationMode = "always") ->
 
 @dataclass
 class IsolationGuard:
-    """Decides whether to run the bitwise isolation assert on each snapshot.
-
-    Modes
-    -----
-    always
-        Assert on every snapshot (recommended default for reported runs).
-    first
-        Assert only on the first snapshot of this guard's lifetime (per seed /
-        runner instance) — canary with near-zero cost.
-    off
-        Never assert (mechanism still uses ``signals_disabled``; no live check).
-    """
+    """When to assert traces across a snapshot: ``always``, ``first``, or ``off``."""
 
     mode: IsolationMode = "always"
     _checked: bool = False
@@ -72,11 +53,7 @@ class IsolationGuard:
         self._checked = True
 
     def for_snapshot(self) -> bool:
-        """Return whether to check this snapshot and advance the canary state.
-
-        When mode is ``first``, the first call returns True and subsequent calls
-        return False. When ``always``, every call returns True.
-        """
+        """Whether to assert this snapshot (advances ``first``-mode canary)."""
         do = self.should_check()
         if do:
             self.note_checked()

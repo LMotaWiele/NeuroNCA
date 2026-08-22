@@ -1,32 +1,7 @@
 """Experiment ledger: freeze experiment_id, config content hash, thresholds.
 
-Scientific integrity rules (Phase 0 design):
-
-1. At primary launch, write under ``{output_dir}/meta/``:
-   - ``experiment_id.txt`` = ``UTC_date + "_" + first8(sha256(canonical_yaml(config)))``
-   - ``config.resolved.yaml``
-   - ``config.content_sha256.txt``  (full SHA-256 of **pre-stamp** resolved config)
-   - ``thresholds.json``
-   - ``signals_broadcast_code_sha256.txt`` (hash of ``signals/*`` + ``broadcast/*``)
-
-2. **Content hash** of the resolved config is the simple identity key: same config
-   bytes ⇒ same ``experiment_id`` suffix. Hash is of the **runtime** config with
-   ``experiment.id`` forced to ``null`` (ledger-owned stamp is applied only when
-   writing ``config.resolved.yaml``). Re-hashing the stamped YAML file will
-   **not** match ``config.content_sha256.txt``; verify with the pre-stamp form
-   (see header comment written into ``config.resolved.yaml``).
-
-3. Freeze is **idempotent** when meta already matches (same config hash, same
-   signals/broadcast code hash, and on-disk ``experiment_id`` suffix matches
-   ``content_sha256[:8]``). Thresholds are always re-derived from the passed
-   config (disk thresholds are not trusted).
-
-4. Freeze **refuses to overwrite** a primary ledger when:
-   - the signals/broadcast source hash differs **or is missing on disk**, or
-   - the resolved-config content hash differs, or
-   - the on-disk experiment_id suffix disagrees with the content hash.
-
-   Callers should archive under ``results/phase0_runs/<experiment_id>/`` instead.
+Identity is the pre-stamp config hash plus ``signals/`` + ``broadcast/`` source.
+Refuse overwrite on mismatch. Full rules: ``docs/design/invariants.md``.
 """
 
 from __future__ import annotations
@@ -88,12 +63,7 @@ def _config_for_hash(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def content_sha256(config: Mapping[str, Any]) -> str:
-    """SHA-256 hex digest of the canonical pre-stamp resolved config.
-
-    Serializes with :func:`neuronca.io.config.canonical_yaml` (sorted keys) after
-    forcing ``experiment.id`` to ``null`` so the ledger stamp cannot circularly
-    affect the identity. This is the documented content hash for Phase 0.
-    """
+    """SHA-256 of canonical YAML with ``experiment.id`` forced to null."""
     payload = canonical_yaml(_config_for_hash(config)).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 

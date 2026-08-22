@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""Fashion-MNIST calibration sequence (same protocol as MNIST, re-probed).
-
-Every homeostatic constant in the locked MNIST stack was derived from MNIST
-activation statistics. Fashion-MNIST is a different distribution; reusing
-MNIST r*_ℓ (and validating straddle only on MNIST pre-act magnitudes) is not a
-transfer test of the *mechanism* — it is an uncalibrated port.
-
-This script re-runs the three gates that unlocked Phase 1a on MNIST:
-
-1. **Target-rate probe** — 1 epoch, measure per-layer ActivationMagnitude EMA
-   means → r*_ℓ for Fashion-MNIST (not MNIST's 0.77/1.02/1.28).
-2. **Straddle operating-point re-measure** — live gap_imprinted births under
-   Fashion r*; report bias-free pre gap/nongap means and verify the
-   per-unit formula B = −(μ_gap+μ_nongap)/2 still produces SEPARATES_OK.
-   (Formula shape is adaptive; magnitudes must still be checked.)
-3. **Growth-fire gate** — short plastic run under Fashion r*: does growth fire
-   every epoch, establish, and avoid thrash-only behavior?
-
-Usage:
-  python scripts/run_fashion_mnist_calibration.py
-  python scripts/run_fashion_mnist_calibration.py --epochs-gate 6 --seeds 0
-"""
+"""Fashion-MNIST r* probe, straddle check, and growth-fire gate (do not reuse MNIST rates)."""
 
 from __future__ import annotations
 

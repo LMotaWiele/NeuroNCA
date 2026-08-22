@@ -287,25 +287,10 @@ def build_mnist_loaders(
     pin_memory: bool | None = None,
     dataset: str = "mnist",
 ) -> MNISTLoaderBundle:
-    """Build DataLoaders for train / probe / test sharing ``task_context``.
+    """Build train / probe / test loaders sharing ``task_context``.
 
-    Returns a dict with loaders plus the index tensors used for the split so
-    tests can verify label transforms against raw labels.
-
-    ``dataset``: ``"mnist"`` (default), ``"fashion_mnist"`` / ``"fashion"``,
-    or ``"kmnist"``.
-
-    Task-switch contract (multi-worker)
-    -----------------------------------
-    Default ``num_workers=0`` is safe for mid-process ``TaskContext.set_transform``.
-    If ``num_workers > 0`` (as in ``configs/default.yaml`` for training throughput):
-
-    - Drain all loader iterators **before** ``set_transform`` (do not flip mid-epoch).
-    - Do not use ``persistent_workers=True`` across the A→B boundary; rebuild
-      loaders after the flip so workers respawn with the new transform.
-    - Prefer ``num_workers=0`` for probe/GT loaders at the switch snapshot.
-
-    See :class:`~neuronca.data.tasks.TaskContext` for details.
+    Drain and rebuild worker loaders at A→B (``docs/design/invariants.md``).
+    ``dataset``: ``mnist`` | ``fashion_mnist`` | ``kmnist``.
     """
     bundles = build_mnist_datasets(
         task_context,

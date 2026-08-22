@@ -1,3 +1,3 @@
-"""NeuroNCA: local importance signal validation (Phase 0)."""
+"""NeuroNCA: structural plasticity on small MLPs (Phase 0–1a closed)."""
 
 __version__ = "0.1.0"

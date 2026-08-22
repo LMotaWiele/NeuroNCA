@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Self-calibrating constants battery (§4.1–4.6).
-
-Stages (run in order; prereg bars in results/.../self_calibrate/prereg.json):
-
-  mnist_equiv   — frozen vs self-cal on MNIST (implementation guard)
-  fashion_adapt — Fashion with warm-start only (no ported MNIST r*)
-  mu_sweep      — decay-rate grid per constant
-  feedback      — coupled r*↔structure runaway check
-  ablation      — single-constant-on + all-on on Fashion
-  kmnist        — third dataset, zero manual constants
-
-Usage:
-  python scripts/run_self_calibrate_battery.py --stage mnist_equiv
-  python scripts/run_self_calibrate_battery.py --stage all
-"""
+"""Self-calibrating constants battery (r* product path; prune/straddle research)."""
 
 from __future__ import annotations
 

@@ -1,10 +1,4 @@
-"""Toy ranking integration: known GT-1 edge order on a fixed tiny network.
-
-Also guards the GT protocol contract: ground-truth compute paths must never
-invoke ``LocalSignal.update`` (snapshot isolation; eligibility / GEVB-RF traces
-must stay frozen while GT runs). Full GEVB signal plumbing is PR-6; here we
-use a mock LocalSignal counter.
-"""
+"""Toy ranking: known GT-1 edge order; GT must never call ``LocalSignal.update``."""
 
 from __future__ import annotations
 
