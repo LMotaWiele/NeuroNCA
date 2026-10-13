@@ -1,12 +1,25 @@
+<!-- agent-memory-schema: 1 -->
 # Notes index — read this first
 
 Agents: load **this file only**, then the **one** row matching the task. Do not bulk-read notes/.
 
+This file is the **authority for what happens next**. Notes hold conditions; this holds the queue.
+
+## Notes
+
 | Topic | File | Status | One-liner |
 |---|---|---|---|
 | How to write notes | [README.md](README.md) | meta | layers, front-matter, access rules |
-| Layout exceptions | [docs/design/layout.md](../../docs/design/layout.md) | sealed | configs/, data/, results/; nested bench worktrees are not product |
-| Engineering invariants | [docs/design/invariants.md](../../docs/design/invariants.md) | sealed | GT isolation, RNG, ledger freeze, local-only plasticity, grid neighbors |
+
+## Active next
+
+| # | Item | Source | Added |
+|---|---|---|---|
+| 1 | In-scope chapters are **closed**. Reproduce from frozen trees / documented scripts; do not overwrite primaries. | human |  |
+
+## Do not
+
+- edit `neuronca-bench-t*` worktrees; reopen Phase 1b/1c or a harder-shift treadmill without a new product mandate.
 
 ## Glossary (optional)
 
@@ -19,7 +32,11 @@ Agents: load **this file only**, then the **one** row matching the task. Do not 
 | `FEATURE_NEIGHBORS_WORSE` | Feature-space neighbors did not beat grid on stationary bars |
 | `MIXED_LAYER_DEPENDENT` | Spatial specialization coherence is not a full regional-consolidation build |
 
-## Active next
+## Design map
 
-- In-scope chapters are **closed**. Reproduce from frozen trees / documented scripts; do not overwrite primaries.
-- **Do not:** edit `neuronca-bench-t*` worktrees; reopen Phase 1b/1c or a harder-shift treadmill without a new product mandate.
+Sealed documents. These are not notes.
+
+| Topic | File | Status | One-liner |
+|---|---|---|---|
+| Layout exceptions | [../../docs/design/layout.md](../../docs/design/layout.md) | sealed | configs/, data/, results/; nested bench worktrees are not product |
+| Engineering invariants | [../../docs/design/invariants.md](../../docs/design/invariants.md) | sealed | GT isolation, RNG, ledger freeze, local-only plasticity, grid neighbors |
